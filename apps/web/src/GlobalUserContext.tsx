@@ -280,6 +280,8 @@ export function GlobalUserContext() {
   const blockedEntry = target ? blocked.find(item => item.user.id === target.id) : undefined;
   const incoming = target ? requests.incoming.find(item => item.user.id === target.id) : undefined;
   const outgoing = target ? requests.outgoing.find(item => item.user.id === target.id) : undefined;
+  const existingDm = target ? dms.some(conversation => !conversation.isGroup && conversation.other?.id === target.id) : false;
+  const canDirectMessage = !!target && !isSelf && !blockedEntry && (!!friend || !!menu?.target.member || existingDm);
   const isOwner = !!menu?.target.member && menu.target.member.role === 'OWNER';
   const canAdmin = (permission: Permission) => !!menu && (menu.permissions.includes('ADMINISTRATOR') || menu.permissions.includes(permission));
   const canKick = !isSelf && !isOwner && canAdmin('KICK_MEMBERS');
@@ -288,6 +290,11 @@ export function GlobalUserContext() {
   const voiceParticipant=menu?.voiceIdentity?voiceSnapshot.participants.find(person=>person.identity===menu.voiceIdentity):undefined;
   const voiceVolume=voiceParticipant?(voiceSnapshot.participantVolumes[voiceParticipant.identity]??100):100;
   const voiceLocallyMuted=voiceParticipant?voiceSnapshot.locallyMutedParticipants.includes(voiceParticipant.identity):false;
+  const profileCanDm = !!profile && profile.user.id !== me?.id && !blocked.some(item=>item.user.id===profile.user.id) && (
+    friends.some(item=>item.id===profile.user.id) ||
+    !!profile.member ||
+    dms.some(conversation=>!conversation.isGroup && conversation.other?.id===profile.user.id)
+  );
 
   async function doAction(action: () => Promise<unknown>, success: string) {
     try {
@@ -370,7 +377,7 @@ export function GlobalUserContext() {
 
       {voiceParticipant&&<><div className="global-user-menu-separator"><span>SES KONTROLLERİ</span></div>{voiceParticipant.local?<div className="global-user-menu-note"><Mic size={15}/><span>Bu sensin. Mikrofon, kulaklık, kamera ve yayın kontrollerin alt ses çubuğunda.</span></div>:<><button type="button" className={voiceLocallyMuted?'voice-context-mute active':'voice-context-mute'} onClick={()=>sendVoiceAction('toggle-local-mute',voiceParticipant.identity)}>{voiceLocallyMuted?<Volume2 size={16}/>:<VolumeX size={16}/>}<span><b>{voiceLocallyMuted?'Yerel sesi aç':'Yerel sessize al'}</b><small>Sadece senin tarafında uygulanır</small></span></button><label className="global-user-volume"><span>SES SEVİYESİ <b>{voiceVolume}%</b></span><input aria-label={`${voiceParticipant.name} ses seviyesi hızlı menü`} type="range" min="0" max="100" step="5" value={voiceVolume} onChange={event=>sendVoiceAction('volume',voiceParticipant.identity,Number(event.target.value))}/></label><div className="global-user-volume-presets" aria-label="Hızlı ses seviyeleri">{[25,50,75,100].map(value=><button key={value} type="button" className={voiceVolume===value?'active':''} onClick={()=>sendVoiceAction('volume',voiceParticipant.identity,value)}>{value}%</button>)}</div><div className="global-voice-state">{voiceParticipant.screen?<><Radio size={13}/> LIVE · ekran paylaşıyor</>:voiceParticipant.muted?<><MicOff size={13}/> Mikrofon kapalı</>:voiceParticipant.speaking?<><Mic size={13}/> Konuşuyor</>:<><Mic size={13}/> Ses kanalında</>}</div></>}</>}
 
-      {!isSelf && friend && <button type="button" onClick={() => void openDm(target)}><MessageCircle size={16}/><span><b>Özel mesaj</b><small>DM sohbetini aç</small></span></button>}
+      {canDirectMessage && <button type="button" onClick={() => void openDm(target)}><MessageCircle size={16}/><span><b>Özel mesaj</b><small>{friend?'DM sohbetini aç':menu?.target.member?'Aynı sunucudan DM aç':'DM sohbetini aç'}</small></span></button>}
       {!isSelf && incoming && <button type="button" onClick={() => void doAction(() => api.acceptFriendRequest(incoming.id), 'Arkadaşlık isteği kabul edildi.')}><UserPlus size={16}/><span><b>Arkadaşlığı kabul et</b><small>Bekleyen isteği onayla</small></span></button>}
       {!isSelf && !friend && !incoming && !outgoing && !blockedEntry && <button type="button" onClick={() => void doAction(() => api.sendFriendRequest(target.username), 'Arkadaşlık isteği gönderildi.')}><UserPlus size={16}/><span><b>Arkadaş ekle</b><small>@{target.username}</small></span></button>}
       {!isSelf && outgoing && <button type="button" disabled><UserPlus size={16}/><span><b>İstek gönderildi</b><small>Yanıt bekleniyor</small></span></button>}
@@ -391,7 +398,7 @@ export function GlobalUserContext() {
         <div className="global-profile-avatar">{profile.user.avatarUrl ? <img src={profile.user.avatarUrl} alt=""/> : nameOf(profile.user).slice(0,2).toUpperCase()}</div>
         <div className="global-profile-copy"><h3>{nameOf(profile.user)}</h3><p>@{profile.user.username}</p><span>{profile.user.statusText || profileModeText(profile.user)}</span></div>
         <div className="global-profile-info"><div><small>DURUM</small><b className={`global-presence ${profile.user.profileMode||'AVAILABLE'}`}>{profileModeText(profile.user)}</b></div>{profile.member && <div><small>SUNUCU ROLÜ</small><b>{roleText(profile.member)}</b></div>}{profile.member?.joinedAt && <div><small>KATILMA</small><b>{new Date(profile.member.joinedAt).toLocaleDateString('tr-TR')}</b></div>}</div>
-        <div className="global-profile-actions">{profile.user.id !== me?.id && friends.some(item => item.id === profile.user.id) && <button className="primary" onClick={() => void openDm(profile.user)}><MessageCircle size={16}/> Mesaj gönder</button>}<button onClick={() => void copyUserId(profile.user)}><Copy size={16}/> ID kopyala</button></div>
+        <div className="global-profile-actions">{profileCanDm && <button className="primary" onClick={() => void openDm(profile.user)}><MessageCircle size={16}/> Mesaj gönder</button>}<button onClick={() => void copyUserId(profile.user)}><Copy size={16}/> ID kopyala</button></div>
       </section>
     </div>}
 
