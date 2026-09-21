@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { VoiceDock, VoicePanel } from './Voice';
@@ -15,7 +15,7 @@ function voiceState(overrides:Record<string,unknown>={}){
   };
 }
 
-afterEach(cleanup);
+afterEach(()=>{cleanup();document.querySelectorAll('[data-test-voice-host]').forEach(node=>node.remove())});
 
 it('offers camera and screen-share controls in an active voice channel',async()=>{
   const user=userEvent.setup();
@@ -70,6 +70,19 @@ it('shows connected voice members and live stream state in the sidebar dock',()=
   expect(screen.getByText('Bob')).toBeTruthy();
   expect(screen.getByText('LIVE')).toBeTruthy();
   expect(screen.getByText('Konuşuyor')).toBeTruthy();
+});
+
+it('embeds voice members directly beneath the connected channel when its channel row exists',async()=>{
+  const host=document.createElement('div');
+  host.dataset.testVoiceHost='1';
+  host.innerHTML='<aside class="channels"><section class="flow-group"><button class="channel voice-connected">General</button></section></aside>';
+  document.body.appendChild(host);
+  const voice=voiceState({participants:[{identity:'alice',name:'Alice',local:true,speaking:true,muted:false,camera:false,screen:false}]});
+  render(<VoiceDock channelName="General" voice={voice as any}/>);
+  await waitFor(()=>expect(host.querySelector('.voice-channel-members-slot')).toBeTruthy());
+  const slot=host.querySelector('.voice-channel-members-slot') as HTMLElement;
+  expect(slot.textContent).toContain('Alice · Sen');
+  expect(slot.textContent).toContain('Konuşuyor');
 });
 
 it('lets a viewer focus a stream and return to the grid',async()=>{
