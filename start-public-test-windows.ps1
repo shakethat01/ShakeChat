@@ -27,7 +27,6 @@ function Stop-OldPublicTest {
         Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
     }
 
-    # A previous failed run may not have reached pids.json creation.
     Stop-PortProcess 4001
     Stop-PortProcess 5174
 }
@@ -72,9 +71,9 @@ function Start-QuickTunnel([string]$Name, [string]$LocalUrl, [string]$Exe) {
     throw "Cloudflare tunnel URL alinamadi ($Name)."
 }
 
-function Show-LogTail([string]$Path, [int]$Lines = 40) {
+function Show-LogTail([string]$Path, [int]$Lines = 50) {
     if (Test-Path $Path) {
-        Write-Host "" -ForegroundColor Red
+        Write-Host ""
         Write-Host "---- $Path (son $Lines satir) ----" -ForegroundColor Yellow
         Get-Content $Path -Tail $Lines -ErrorAction SilentlyContinue
     }
@@ -94,7 +93,6 @@ if (-not (Test-Path ".env") -or -not (Test-Path "apps/api/.env")) {
 }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw "Node.js bulunamadi." }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw "npm bulunamadi." }
-
 if (-not (Wait-Port 7880 3)) { throw "LiveKit 7880 calismiyor. .\start-windows.ps1 acik olmali." }
 if (-not (Wait-Port 9000 3)) { throw "MinIO 9000 calismiyor. .\start-windows.ps1 acik olmali." }
 
@@ -104,7 +102,6 @@ if (-not (Test-Path $cloudflared)) {
     Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile $cloudflared
 }
 
-# Clean tunnel processes left by a previous failed run of this repo-local cloudflared.
 try {
     Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.ExecutablePath -eq $cloudflared } |
@@ -113,12 +110,10 @@ try {
 
 Write-Host "Public tuneller olusturuluyor..." -ForegroundColor Cyan
 $webTunnel = Start-QuickTunnel "web" "http://127.0.0.1:5174" $cloudflared
-$apiTunnel = Start-QuickTunnel "api" "http://127.0.0.1:4001" $cloudflared
 $minioTunnel = Start-QuickTunnel "minio" "http://127.0.0.1:9000" $cloudflared
 $livekitTunnel = Start-QuickTunnel "livekit" "http://127.0.0.1:7880" $cloudflared
 
 $webUrl = $webTunnel.Url
-$apiUrl = $apiTunnel.Url
 $minioUri = [uri]$minioTunnel.Url
 $livekitWs = $livekitTunnel.Url -replace '^https://', 'wss://'
 
@@ -141,27 +136,42 @@ npm run dev --prefix apps/api
 "@
 $apiProc = Start-Process powershell.exe -ArgumentList @("-NoLogo", "-NoProfile", "-Command", $apiCmd) -PassThru -WindowStyle Hidden -RedirectStandardOutput $apiOut -RedirectStandardError $apiErr
 
-Write-Host "Public Web baslatiliyor..." -ForegroundColor Cyan
-$webCmd = @"
-Set-Location '$root'
-`$env:VITE_API_ORIGIN='$apiUrl'
-npm run dev --prefix apps/web -- --host 127.0.0.1 --port 5174 --strictPort
-"@
-$webProc = Start-Process powershell.exe -ArgumentList @("-NoLogo", "-NoProfile", "-Command", $webCmd) -PassThru -WindowStyle Hidden -RedirectStandardOutput $webOut -RedirectStandardError $webErr
-
 if (-not (Wait-Port 4001 60)) {
     Show-LogTail $apiOut
     Show-LogTail $apiErr
     throw "Public API 4001 acilmadi. Yukaridaki loga bak."
 }
+
+Write-Host "Public Web baslatiliyor..." -ForegroundColor Cyan
+$webCmd = @"
+Set-Location '$root'
+`$env:VITE_API_ORIGIN='$webUrl'
+`$env:SHAKECHAT_API_PROXY_TARGET='http://127.0.0.1:4001'
+npm run dev --prefix apps/web -- --host 127.0.0.1 --port 5174 --strictPort
+"@
+$webProc = Start-Process powershell.exe -ArgumentList @("-NoLogo", "-NoProfile", "-Command", $webCmd) -PassThru -WindowStyle Hidden -RedirectStandardOutput $webOut -RedirectStandardError $webErr
+
 if (-not (Wait-Port 5174 60)) {
     Show-LogTail $webOut
     Show-LogTail $webErr
     throw "Public Web 5174 acilmadi. Yukaridaki loga bak."
 }
 
-$pids = @($webTunnel.Process.Id, $apiTunnel.Process.Id, $minioTunnel.Process.Id, $livekitTunnel.Process.Id, $apiProc.Id, $webProc.Id)
-@{ pids = $pids; webUrl = $webUrl; apiUrl = $apiUrl; startedAt = (Get-Date).ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $stateDir "pids.json") -Encoding UTF8
+# Same-origin proxy smoke test. 401/403 is acceptable; network failure is not.
+try {
+    $r = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:5174/api/auth/me" -TimeoutSec 10 -ErrorAction Stop
+} catch {
+    if (-not $_.Exception.Response) {
+        Show-LogTail $apiOut
+        Show-LogTail $apiErr
+        Show-LogTail $webOut
+        Show-LogTail $webErr
+        throw "Web -> API proxy baglantisi kurulamadi."
+    }
+}
+
+$pids = @($webTunnel.Process.Id, $minioTunnel.Process.Id, $livekitTunnel.Process.Id, $apiProc.Id, $webProc.Id)
+@{ pids = $pids; webUrl = $webUrl; startedAt = (Get-Date).ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $stateDir "pids.json") -Encoding UTF8
 
 Write-Host ""
 Write-Host "==============================================" -ForegroundColor Green
@@ -171,11 +181,9 @@ Write-Host ""
 Write-Host "ARKADASLARA SADECE BU LINKI AT:" -ForegroundColor Yellow
 Write-Host $webUrl -ForegroundColor Cyan
 Write-Host ""
+Write-Host "Web + API + realtime artik TEK public origin uzerinden gidiyor." -ForegroundColor Green
 Write-Host "Onlar: linke tikla -> hesap ac/giris yap -> davetle sunucuya gir." -ForegroundColor White
-Write-Host "Sen de ayni public linki acarsan hepiniz ayni public realtime oturumunda olursunuz." -ForegroundColor White
-Write-Host ""
-Write-Host "NOT: Chat, DM, hesap, sunucu, davet ve realtime public linkten calisir." -ForegroundColor DarkYellow
-Write-Host "Ses/ekran paylasimi self-hosted LiveKit medya portlari nedeniyle internetten ek ag ayari isteyebilir; bu link icin Tailscale gerekmez." -ForegroundColor DarkYellow
+Write-Host "Ses/ekran: LiveKit signaling HTTPS/WSS tunelinden, medya 7881/TCP + 7882/UDP ile dogrudan PC'ye gelir." -ForegroundColor DarkYellow
 Write-Host ""
 Write-Host "Kapatmak icin: .\stop-public-test-windows.ps1" -ForegroundColor Gray
 Write-Host "Bu pencereyi acik birakabilirsin." -ForegroundColor Gray
