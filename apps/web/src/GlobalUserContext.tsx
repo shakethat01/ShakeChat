@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Ban, Clock3, Copy, MessageCircle, ShieldAlert, UserMinus, UserPlus, UserRound, Volume2, X } from 'lucide-react';
+import { Ban, Clock3, Copy, MessageCircle, Mic, MicOff, Radio, ShieldAlert, UserMinus, UserPlus, UserRound, Volume2, VolumeX, X } from 'lucide-react';
 import { api, BlockedUser, DirectConversation, Friend, FriendRequests, Member, Permission, Server, User } from './api';
 
 type ResolvedTarget = {
@@ -13,6 +13,23 @@ type MenuState = {
   target: ResolvedTarget;
   server?: Server;
   permissions: Permission[];
+  voiceIdentity?: string;
+};
+
+type VoiceContextParticipant = {
+  identity:string;
+  name:string;
+  local:boolean;
+  speaking:boolean;
+  muted:boolean;
+  camera:boolean;
+  screen:boolean;
+};
+
+type VoiceSnapshot = {
+  participants:VoiceContextParticipant[];
+  participantVolumes:Record<string,number>;
+  locallyMutedParticipants:string[];
 };
 
 type MemberRow = Awaited<ReturnType<typeof api.members>>[number];
@@ -46,7 +63,14 @@ function roleText(member?: Member) {
   return 'Üye';
 }
 
+function profileModeText(user:User){
+  if(user.profileMode==='FOCUS')return 'Rahatsız etmeyin';
+  if(user.profileMode==='AWAY')return 'Boşta';
+  return 'Çevrimiçi';
+}
+
 function extractTargetName(element: Element) {
+  if (element.matches('.voice-dock-member')) return element.querySelector('.voice-dock-member-copy b')?.textContent || '';
   if (element.matches('.messages article')) return element.querySelector('.msg-meta b')?.textContent || '';
   if (element.matches('.group-member-list > div')) return element.querySelector('span')?.textContent || '';
   if (element.matches('.dm-profile')) return element.querySelector('h3')?.textContent || '';
@@ -56,7 +80,7 @@ function extractTargetName(element: Element) {
 
 function supportedTarget(start: EventTarget | null) {
   if (!(start instanceof Element)) return null;
-  return start.closest('.members .member,.members .group-member-list>div,.members .dm-profile,.messages article,.friends-home .social-row,.social-sidebar .dm-nav');
+  return start.closest('.voice-dock-member,.members .member,.members .group-member-list>div,.members .dm-profile,.messages article,.friends-home .social-row,.social-sidebar .dm-nav');
 }
 
 export function GlobalUserContext() {
@@ -67,6 +91,7 @@ export function GlobalUserContext() {
   const [blocked, setBlocked] = useState<BlockedUser[]>([]);
   const [dms, setDms] = useState<DirectConversation[]>([]);
   const [serverMembers, setServerMembers] = useState<Member[]>([]);
+  const [voiceSnapshot,setVoiceSnapshot]=useState<VoiceSnapshot>({participants:[],participantVolumes:{},locallyMutedParticipants:[]});
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [profile, setProfile] = useState<ResolvedTarget | null>(null);
   const [notice, setNotice] = useState('');
@@ -106,8 +131,17 @@ export function GlobalUserContext() {
 
   function activeServerFromDom(list: Server[] = servers) {
     const title = document.querySelector('.space-header span')?.textContent?.trim();
-    if (!title) return undefined;
-    return list.find(server => server.name === title);
+    if (title) {
+      const active=list.find(server => server.name === title);
+      if(active)return active;
+    }
+    const voiceTitle=document.querySelector('.voice-dock-copy b')?.textContent?.trim();
+    if(voiceTitle?.includes(' / ')){
+      const serverName=voiceTitle.split(' / ')[0]?.trim();
+      const voiceServer=list.find(server=>server.name===serverName);
+      if(voiceServer)return voiceServer;
+    }
+    return undefined;
   }
 
   async function loadActiveServerContext() {
@@ -159,6 +193,15 @@ export function GlobalUserContext() {
     };
   }, []);
 
+  useEffect(()=>{
+    const snapshot=(event:Event)=>{
+      const detail=(event as CustomEvent<VoiceSnapshot>).detail;
+      if(detail)setVoiceSnapshot(detail);
+    };
+    window.addEventListener('shakechat:voice-snapshot',snapshot as EventListener);
+    return()=>window.removeEventListener('shakechat:voice-snapshot',snapshot as EventListener);
+  },[]);
+
   useEffect(() => {
     const onContextMenu = async (event: MouseEvent) => {
       const targetElement = supportedTarget(event.target);
@@ -168,18 +211,21 @@ export function GlobalUserContext() {
       event.preventDefault();
       event.stopPropagation();
       const context = await loadActiveServerContext();
-      const user = resolveByLabel(label, context.members);
+      const voiceIdentity=(targetElement as HTMLElement).dataset.voiceUserId;
+      const user = voiceIdentity
+        ? (context.members.find(item=>item.id===voiceIdentity)||baseUsers.find(item=>item.id===voiceIdentity))
+        : resolveByLabel(label, context.members);
       if (!user) {
         showNotice('Kullanıcı eşleştirilemedi. Profil adı benzersiz olmayabilir.');
         return;
       }
       const member = context.members.find(item => item.id === user.id);
-      const width = 292;
-      const height = 430;
+      const width = 304;
+      const height = voiceIdentity ? 620 : 470;
       const pad = 10;
       const x = Math.max(pad, Math.min(event.clientX, window.innerWidth - width - pad));
       const y = Math.max(pad, Math.min(event.clientY, window.innerHeight - height - pad));
-      setMenu({ x, y, target: { user, member }, server: context.server, permissions: context.permissions });
+      setMenu({ x, y, target: { user, member }, server: context.server, permissions: context.permissions, voiceIdentity });
     };
     const close = () => setMenu(null);
     const key = (event: KeyboardEvent) => { if (event.key === 'Escape') { setMenu(null); setProfile(null); } };
@@ -208,6 +254,9 @@ export function GlobalUserContext() {
   const canKick = !isSelf && !isOwner && canAdmin('KICK_MEMBERS');
   const canBan = !isSelf && !isOwner && canAdmin('BAN_MEMBERS');
   const canTimeout = !isSelf && !isOwner && canAdmin('MODERATE_MEMBERS');
+  const voiceParticipant=menu?.voiceIdentity?voiceSnapshot.participants.find(person=>person.identity===menu.voiceIdentity):undefined;
+  const voiceVolume=voiceParticipant?(voiceSnapshot.participantVolumes[voiceParticipant.identity]??100):100;
+  const voiceLocallyMuted=voiceParticipant?voiceSnapshot.locallyMutedParticipants.includes(voiceParticipant.identity):false;
 
   async function doAction(action: () => Promise<unknown>, success: string) {
     try {
@@ -218,6 +267,15 @@ export function GlobalUserContext() {
     } catch (error) {
       showNotice(error instanceof Error ? error.message : 'İşlem başarısız.');
     }
+  }
+
+  function sendVoiceAction(type:'volume'|'toggle-local-mute',identity:string,value?:number){
+    setVoiceSnapshot(previous=>{
+      if(type==='volume'&&typeof value==='number')return {...previous,participantVolumes:{...previous.participantVolumes,[identity]:value}};
+      const muted=previous.locallyMutedParticipants.includes(identity);
+      return {...previous,locallyMutedParticipants:muted?previous.locallyMutedParticipants.filter(item=>item!==identity):[...previous.locallyMutedParticipants,identity]};
+    });
+    window.dispatchEvent(new CustomEvent('shakechat:voice-action',{detail:{type,identity,value}}));
   }
 
   async function openDm(user: User) {
@@ -268,13 +326,18 @@ export function GlobalUserContext() {
     await doAction(() => api.restrictMemberMessages(serverId, target.id, minutes, reason), `${nameOf(target)} ${minutes} dakika kısıtlandı.`);
   }
 
+  const voiceStateText=voiceParticipant?(voiceParticipant.screen?'Yayın yapıyor':voiceParticipant.speaking?'Konuşuyor':voiceParticipant.muted?'Mikrofon kapalı':'Ses kanalında'):'';
+
   return <>
     {menu && target && <div className="global-user-menu" role="menu" aria-label={`${nameOf(target)} kullanıcı menüsü`} style={{ left: menu.x, top: menu.y }} onPointerDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}>
       <div className="global-user-menu-head">
         <div className="global-user-avatar">{target.avatarUrl ? <img src={target.avatarUrl} alt=""/> : nameOf(target).slice(0,2).toUpperCase()}</div>
-        <div><b>{nameOf(target)}{isSelf ? ' · Sen' : ''}</b><small>@{target.username}</small><span>{menu.target.member ? roleText(menu.target.member) : (target.statusText || 'ShakeChat kullanıcısı')}</span></div>
+        <div><b>{nameOf(target)}{isSelf ? ' · Sen' : ''}</b><small>@{target.username}</small><span>{menu.target.member ? roleText(menu.target.member) : (target.statusText || profileModeText(target))}{voiceStateText?` · ${voiceStateText}`:''}</span></div>
       </div>
       <button type="button" onClick={() => { setProfile(menu.target); setMenu(null); }}><UserRound size={16}/><span><b>Profili görüntüle</b><small>Kullanıcı kartını aç</small></span></button>
+
+      {voiceParticipant&&<><div className="global-user-menu-separator"><span>SES KONTROLLERİ</span></div>{voiceParticipant.local?<div className="global-user-menu-note"><Mic size={15}/><span>Bu sensin. Mikrofon, kulaklık, kamera ve yayın kontrollerin alt ses çubuğunda.</span></div>:<><button type="button" className={voiceLocallyMuted?'voice-context-mute active':'voice-context-mute'} onClick={()=>sendVoiceAction('toggle-local-mute',voiceParticipant.identity)}>{voiceLocallyMuted?<Volume2 size={16}/>:<VolumeX size={16}/>}<span><b>{voiceLocallyMuted?'Yerel sesi aç':'Yerel sessize al'}</b><small>Sadece senin tarafında uygulanır</small></span></button><label className="global-user-volume"><span>SES SEVİYESİ <b>{voiceVolume}%</b></span><input aria-label={`${voiceParticipant.name} ses seviyesi hızlı menü`} type="range" min="0" max="100" step="5" value={voiceVolume} onChange={event=>sendVoiceAction('volume',voiceParticipant.identity,Number(event.target.value))}/></label><div className="global-user-volume-presets" aria-label="Hızlı ses seviyeleri">{[25,50,75,100].map(value=><button key={value} type="button" className={voiceVolume===value?'active':''} onClick={()=>sendVoiceAction('volume',voiceParticipant.identity,value)}>{value}%</button>)}</div><div className="global-voice-state">{voiceParticipant.screen?<><Radio size={13}/> LIVE · ekran paylaşıyor</>:voiceParticipant.muted?<><MicOff size={13}/> Mikrofon kapalı</>:voiceParticipant.speaking?<><Mic size={13}/> Konuşuyor</>:<><Mic size={13}/> Ses kanalında</>}</div></>}</>}
+
       {!isSelf && friend && <button type="button" onClick={() => void openDm(target)}><MessageCircle size={16}/><span><b>Özel mesaj</b><small>DM sohbetini aç</small></span></button>}
       {!isSelf && incoming && <button type="button" onClick={() => void doAction(() => api.acceptFriendRequest(incoming.id), 'Arkadaşlık isteği kabul edildi.')}><UserPlus size={16}/><span><b>Arkadaşlığı kabul et</b><small>Bekleyen isteği onayla</small></span></button>}
       {!isSelf && !friend && !incoming && !outgoing && !blockedEntry && <button type="button" onClick={() => void doAction(() => api.sendFriendRequest(target.username), 'Arkadaşlık isteği gönderildi.')}><UserPlus size={16}/><span><b>Arkadaş ekle</b><small>@{target.username}</small></span></button>}
@@ -294,8 +357,8 @@ export function GlobalUserContext() {
         <button className="global-profile-close" aria-label="Profil kartını kapat" onClick={() => setProfile(null)}><X size={18}/></button>
         <div className="global-profile-banner"/>
         <div className="global-profile-avatar">{profile.user.avatarUrl ? <img src={profile.user.avatarUrl} alt=""/> : nameOf(profile.user).slice(0,2).toUpperCase()}</div>
-        <div className="global-profile-copy"><h3>{nameOf(profile.user)}</h3><p>@{profile.user.username}</p><span>{profile.user.statusText || 'ShakeChat kullanıcısı'}</span></div>
-        <div className="global-profile-info"><div><small>DURUM</small><b>{profile.user.profileMode === 'FOCUS' ? 'Rahatsız etmeyin' : profile.user.profileMode === 'AWAY' ? 'Boşta' : 'Çevrimiçi / müsait'}</b></div>{profile.member && <div><small>SUNUCU ROLÜ</small><b>{roleText(profile.member)}</b></div>}{profile.member?.joinedAt && <div><small>KATILMA</small><b>{new Date(profile.member.joinedAt).toLocaleDateString('tr-TR')}</b></div>}</div>
+        <div className="global-profile-copy"><h3>{nameOf(profile.user)}</h3><p>@{profile.user.username}</p><span>{profile.user.statusText || profileModeText(profile.user)}</span></div>
+        <div className="global-profile-info"><div><small>DURUM</small><b className={`global-presence ${profile.user.profileMode||'AVAILABLE'}`}>{profileModeText(profile.user)}</b></div>{profile.member && <div><small>SUNUCU ROLÜ</small><b>{roleText(profile.member)}</b></div>}{profile.member?.joinedAt && <div><small>KATILMA</small><b>{new Date(profile.member.joinedAt).toLocaleDateString('tr-TR')}</b></div>}</div>
         <div className="global-profile-actions">{profile.user.id !== me?.id && friends.some(item => item.id === profile.user.id) && <button className="primary" onClick={() => void openDm(profile.user)}><MessageCircle size={16}/> Mesaj gönder</button>}<button onClick={() => void copyUserId(profile.user)}><Copy size={16}/> ID kopyala</button></div>
       </section>
     </div>}
