@@ -1,4 +1,4 @@
-import { MouseEvent as ReactMouseEvent, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Camera, CameraOff, Focus, Grid2X2, Headphones, Maximize2, Mic, MicOff, MonitorUp, PhoneOff, Radio, ScreenShareOff, Volume2, VolumeX } from 'lucide-react';
 import { VoiceParticipant, VoiceVideoTrack } from './useVoice';
@@ -37,6 +37,8 @@ type VoiceState = {
   setParticipantVolume:(identity:string,value:number)=>void;
   toggleParticipantLocalMute:(identity:string)=>void;
 };
+
+type VoiceContextAction = { type:'volume'|'toggle-local-mute'; identity:string; value?:number };
 
 function deviceName(device:MediaDeviceInfo,index:number,prefix:string){return device.label||`${prefix} ${index+1}`}
 function pttLabel(voice:VoiceState){return `Bas-konuş · ${pushToTalkKeyLabel(voice.pushToTalkKey)}`}
@@ -110,56 +112,33 @@ function VideoTile({item,featured,onToggleFeature}:{item:VoiceVideoTrack;feature
 }
 
 function VoiceMemberList({voice,embedded=false}:{voice:VoiceState;embedded?:boolean}){
-  const [menu,setMenu]=useState<{identity:string;x:number;y:number}|null>(null);
-  const selected=menu?voice.participants.find(person=>person.identity===menu.identity):undefined;
-  const selectedMuted=selected?voice.locallyMutedParticipants.includes(selected.identity):false;
-  const selectedVolume=selected?(voice.participantVolumes[selected.identity]??100):100;
+  useEffect(()=>{
+    window.dispatchEvent(new CustomEvent('shakechat:voice-snapshot',{detail:{
+      participants:voice.participants.map(person=>({identity:person.identity,name:person.name,local:person.local,speaking:person.speaking,muted:person.muted,camera:person.camera,screen:person.screen})),
+      participantVolumes:voice.participantVolumes,
+      locallyMutedParticipants:voice.locallyMutedParticipants,
+    }}));
+  },[voice.participants,voice.participantVolumes,voice.locallyMutedParticipants]);
 
   useEffect(()=>{
-    if(!menu)return;
-    const close=()=>setMenu(null);
-    const key=(event:KeyboardEvent)=>{if(event.key==='Escape')close()};
-    window.addEventListener('pointerdown',close);
-    window.addEventListener('blur',close);
-    window.addEventListener('scroll',close,true);
-    window.addEventListener('keydown',key);
-    return()=>{
-      window.removeEventListener('pointerdown',close);
-      window.removeEventListener('blur',close);
-      window.removeEventListener('scroll',close,true);
-      window.removeEventListener('keydown',key);
+    const action=(event:Event)=>{
+      const detail=(event as CustomEvent<VoiceContextAction>).detail;
+      if(!detail||!voice.participants.some(person=>person.identity===detail.identity&&!person.local))return;
+      if(detail.type==='toggle-local-mute')voice.toggleParticipantLocalMute(detail.identity);
+      else if(detail.type==='volume'&&typeof detail.value==='number')voice.setParticipantVolume(detail.identity,detail.value);
     };
-  },[menu]);
+    window.addEventListener('shakechat:voice-action',action as EventListener);
+    return()=>window.removeEventListener('shakechat:voice-action',action as EventListener);
+  },[voice.participants,voice.setParticipantVolume,voice.toggleParticipantLocalMute]);
 
-  function openMenu(event:ReactMouseEvent,person:VoiceParticipant){
-    event.preventDefault();
-    event.stopPropagation();
-    const width=264,height=226,pad=8;
-    const x=Math.max(pad,Math.min(event.clientX,window.innerWidth-width-pad));
-    const y=Math.max(pad,Math.min(event.clientY,window.innerHeight-height-pad));
-    setMenu({identity:person.identity,x,y});
-  }
-
-  const rows=<div className={embedded?'voice-dock-members channel-voice-members':'voice-dock-members'} aria-label="Ses kanalındaki kullanıcılar">{voice.participants.map(person=>{
+  return <div className={embedded?'voice-dock-members channel-voice-members':'voice-dock-members'} aria-label="Ses kanalındaki kullanıcılar">{voice.participants.map(person=>{
     const localMuted=voice.locallyMutedParticipants.includes(person.identity);
-    return <div className={`voice-dock-member ${person.speaking&&!localMuted?'speaking':''} ${person.screen?'streaming':''}`} key={person.identity} onContextMenu={event=>openMenu(event,person)} title={person.local?'Ses kanalındasın':'Sağ tık: ses kontrolleri'}>
+    return <div className={`voice-dock-member ${person.speaking&&!localMuted?'speaking':''} ${person.screen?'streaming':''}`} key={person.identity} data-voice-user-id={person.identity} data-voice-user-name={person.name} title={person.local?'Ses kanalındasın':'Sağ tık: kullanıcı ve ses kontrolleri'}>
       <div className="voice-dock-avatar">{person.name.slice(0,2).toUpperCase()}</div>
       <div className="voice-dock-member-copy"><b>{person.name}{person.local?' · Sen':''}</b><small>{person.speaking&&!localMuted?'Konuşuyor':person.muted?'Mikrofon kapalı':'Ses kanalında'}</small></div>
       <div className="voice-dock-member-state">{person.screen&&<span className="voice-live-badge compact"><Radio size={10}/> LIVE</span>}{localMuted?<VolumeX size={14}/>:person.muted?<MicOff size={14}/>:<Mic size={14}/>}</div>
     </div>;
   })}</div>;
-
-  return <>
-    {rows}
-    {menu&&selected&&createPortal(<div className="voice-user-menu" role="menu" aria-label={`${selected.name} ses kontrolleri`} style={{left:menu.x,top:menu.y}} onPointerDown={event=>event.stopPropagation()} onContextMenu={event=>event.preventDefault()}>
-      <div className="voice-user-menu-head"><div className="voice-user-menu-avatar">{selected.name.slice(0,2).toUpperCase()}</div><div><b>{selected.name}{selected.local?' · Sen':''}</b><small>{selected.screen?'Yayın yapıyor':selected.speaking?'Konuşuyor':selected.muted?'Mikrofon kapalı':'Ses kanalında'}</small></div>{selected.screen&&<span className="voice-live-badge compact"><Radio size={10}/> LIVE</span>}</div>
-      {selected.local?<div className="voice-user-menu-self">Bu sensin. Mikrofon, kulaklık, kamera ve yayın kontrolleri aşağıdaki ses çubuğunda.</div>:<>
-        <button type="button" className={selectedMuted?'voice-user-menu-mute active':'voice-user-menu-mute'} onClick={()=>voice.toggleParticipantLocalMute(selected.identity)}>{selectedMuted?<Volume2 size={15}/>:<VolumeX size={15}/>}<span><b>{selectedMuted?'Yerel sesi aç':'Yerel sessize al'}</b><small>Yalnızca senin tarafında uygulanır.</small></span></button>
-        <label className="voice-user-volume"><span>SES SEVİYESİ <b>{selectedVolume}%</b></span><input aria-label={`${selected.name} ses seviyesi hızlı menü`} type="range" min="0" max="100" step="5" value={selectedVolume} onChange={event=>voice.setParticipantVolume(selected.identity,Number(event.target.value))}/></label>
-        <div className="voice-volume-presets" aria-label="Hızlı ses seviyeleri">{[25,50,75,100].map(value=><button key={value} type="button" className={selectedVolume===value?'active':''} onClick={()=>voice.setParticipantVolume(selected.identity,value)}>{value}%</button>)}</div>
-      </>}
-    </div>,document.body)}
-  </>;
 }
 
 export function VoicePanel({channelId,channelName,voice}:{channelId:string;channelName:string;voice:VoiceState}){
