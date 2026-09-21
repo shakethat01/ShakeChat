@@ -7,6 +7,14 @@ $stateDir = Join-Path $root ".public-test"
 $toolsDir = Join-Path $root ".tools"
 New-Item -ItemType Directory -Force -Path $stateDir, $toolsDir | Out-Null
 
+function Stop-PortProcess([int]$Port) {
+    try {
+        Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique |
+            ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+    } catch {}
+}
+
 function Stop-OldPublicTest {
     $pidFile = Join-Path $stateDir "pids.json"
     if (Test-Path $pidFile) {
@@ -18,6 +26,10 @@ function Stop-OldPublicTest {
         } catch {}
         Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
     }
+
+    # A previous failed run may not have reached pids.json creation.
+    Stop-PortProcess 4001
+    Stop-PortProcess 5174
 }
 
 function Wait-Port([int]$Port, [int]$Seconds = 45) {
@@ -60,7 +72,15 @@ function Start-QuickTunnel([string]$Name, [string]$LocalUrl, [string]$Exe) {
     throw "Cloudflare tunnel URL alinamadi ($Name)."
 }
 
-Write-Host "" 
+function Show-LogTail([string]$Path, [int]$Lines = 40) {
+    if (Test-Path $Path) {
+        Write-Host "" -ForegroundColor Red
+        Write-Host "---- $Path (son $Lines satir) ----" -ForegroundColor Yellow
+        Get-Content $Path -Tail $Lines -ErrorAction SilentlyContinue
+    }
+}
+
+Write-Host ""
 Write-Host "==============================================" -ForegroundColor DarkCyan
 Write-Host "   ShakeChat PUBLIC Browser Test" -ForegroundColor Cyan
 Write-Host "==============================================" -ForegroundColor DarkCyan
@@ -84,6 +104,13 @@ if (-not (Test-Path $cloudflared)) {
     Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile $cloudflared
 }
 
+# Clean tunnel processes left by a previous failed run of this repo-local cloudflared.
+try {
+    Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -eq $cloudflared } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+} catch {}
+
 Write-Host "Public tuneller olusturuluyor..." -ForegroundColor Cyan
 $webTunnel = Start-QuickTunnel "web" "http://127.0.0.1:5174" $cloudflared
 $apiTunnel = Start-QuickTunnel "api" "http://127.0.0.1:4001" $cloudflared
@@ -95,6 +122,12 @@ $apiUrl = $apiTunnel.Url
 $minioUri = [uri]$minioTunnel.Url
 $livekitWs = $livekitTunnel.Url -replace '^https://', 'wss://'
 
+$apiOut = Join-Path $stateDir "api-process.out.log"
+$apiErr = Join-Path $stateDir "api-process.err.log"
+$webOut = Join-Path $stateDir "web-process.out.log"
+$webErr = Join-Path $stateDir "web-process.err.log"
+Remove-Item $apiOut, $apiErr, $webOut, $webErr -Force -ErrorAction SilentlyContinue
+
 Write-Host "Public API baslatiliyor..." -ForegroundColor Cyan
 $apiCmd = @"
 Set-Location '$root'
@@ -104,25 +137,33 @@ Set-Location '$root'
 `$env:MINIO_ENDPOINT='$($minioUri.Host)'
 `$env:MINIO_PORT='443'
 `$env:MINIO_USE_SSL='true'
-npm run dev -w @shakechat/api
+npm run dev --prefix apps/api
 "@
-$apiProc = Start-Process powershell.exe -ArgumentList @("-NoLogo", "-NoProfile", "-Command", $apiCmd) -PassThru
+$apiProc = Start-Process powershell.exe -ArgumentList @("-NoLogo", "-NoProfile", "-Command", $apiCmd) -PassThru -WindowStyle Hidden -RedirectStandardOutput $apiOut -RedirectStandardError $apiErr
 
 Write-Host "Public Web baslatiliyor..." -ForegroundColor Cyan
 $webCmd = @"
 Set-Location '$root'
 `$env:VITE_API_ORIGIN='$apiUrl'
-npm run dev -w @shakechat/web -- --port 5174
+npm run dev --prefix apps/web -- --host 127.0.0.1 --port 5174 --strictPort
 "@
-$webProc = Start-Process powershell.exe -ArgumentList @("-NoLogo", "-NoProfile", "-Command", $webCmd) -PassThru
+$webProc = Start-Process powershell.exe -ArgumentList @("-NoLogo", "-NoProfile", "-Command", $webCmd) -PassThru -WindowStyle Hidden -RedirectStandardOutput $webOut -RedirectStandardError $webErr
 
-if (-not (Wait-Port 4001 60)) { throw "Public API 4001 acilmadi." }
-if (-not (Wait-Port 5174 60)) { throw "Public Web 5174 acilmadi." }
+if (-not (Wait-Port 4001 60)) {
+    Show-LogTail $apiOut
+    Show-LogTail $apiErr
+    throw "Public API 4001 acilmadi. Yukaridaki loga bak."
+}
+if (-not (Wait-Port 5174 60)) {
+    Show-LogTail $webOut
+    Show-LogTail $webErr
+    throw "Public Web 5174 acilmadi. Yukaridaki loga bak."
+}
 
 $pids = @($webTunnel.Process.Id, $apiTunnel.Process.Id, $minioTunnel.Process.Id, $livekitTunnel.Process.Id, $apiProc.Id, $webProc.Id)
 @{ pids = $pids; webUrl = $webUrl; apiUrl = $apiUrl; startedAt = (Get-Date).ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $stateDir "pids.json") -Encoding UTF8
 
-Write-Host "" 
+Write-Host ""
 Write-Host "==============================================" -ForegroundColor Green
 Write-Host "  SHAKECHAT PUBLIC TEST HAZIR" -ForegroundColor Green
 Write-Host "==============================================" -ForegroundColor Green
