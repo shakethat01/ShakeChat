@@ -1,0 +1,16 @@
+ShakeChat v0.8.4 -> v0.9
+
+1) npm run dev açıksa Ctrl+C
+2) guncelleme klasörünün İÇERİĞİNİ mevcut proje üzerine kopyala
+3) PowerShell:
+
+npm install
+npm run db:generate
+npm run db:migrate:v09
+npm run typecheck
+npm run build
+npm test
+npm run dev
+
+NOT: v0.9 migration içerir.
+VERİ SİLME: prisma migrate reset veya docker compose down -v ÇALIŞTIRMA.

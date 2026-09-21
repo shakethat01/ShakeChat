@@ -1,0 +1,32 @@
+﻿node_modules/
+dist/
+coverage/
+*.log
+
+.env
+.env.*
+!.env.example
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+postgres-data/
+redis-data/
+minio-data/
+data/
+tmp/
+temp/
+
+*.tsbuildinfo
+
+vitest-hata.txt
+
+# Local private infrastructure config
+docker-compose.yml
+infrastructure/livekit/livekit.yaml
+
+# Build/cache
+*.tsbuildinfo
+vitest-hata.txt

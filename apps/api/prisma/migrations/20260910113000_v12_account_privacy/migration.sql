@@ -1,0 +1,6 @@
+CREATE TYPE "FriendRequestPolicy" AS ENUM ('EVERYONE', 'SHARED_SERVERS', 'NOBODY');
+
+ALTER TABLE "User"
+  ADD COLUMN "authVersion" INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN "friendRequestPolicy" "FriendRequestPolicy" NOT NULL DEFAULT 'EVERYONE',
+  ADD COLUMN "allowGroupDmInvites" BOOLEAN NOT NULL DEFAULT true;

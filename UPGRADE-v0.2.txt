@@ -1,0 +1,22 @@
+ShakeChat v0.1/v0.2 -> düzeltilmiş v0.2
+
+Mevcut proje klasörünüzde kalın. Klasörü yeniden adlandırmayın.
+1. npm run dev çalışan terminalde Ctrl+C yapın.
+2. Mevcut kaynakların yedeğini alın; .env, apps/api/.env ve migration dosyalarını koruyun.
+3. Ana paketteki guncelleme klasörünün içindekileri mevcut klasöre birleştirerek kopyalayın.
+4. npm install
+5. npm run db:generate
+6. npm run typecheck
+7. npm run build
+8. npm test
+9. npm run dev
+
+Docker servisleri açık kalabilir. Prisma şeması değişmedi: db:migrate gerekmez.
+Veritabanı resetlemeyin ve docker compose down -v çalıştırmayın.
+
+İki oturum testi: normal Chrome ve gizli pencerede AYNI hesabı açın.
+Aynı metin kanalında mesaj gönderin; diğerinde F5 yapmadan görünmeli.
+Farklı hesap testi, iki hesap zaten aynı sunucuya üyeyse mümkündür.
+Bu sürüm davet sistemi eklemez. Yeni kullanıcıları veritabanına elle eklemek zorunda değilsiniz;
+günlük kontrol için aynı hesapla iki oturum yeterlidir. Farklı kullanıcı ve çevrimiçi/yazıyor
+davranışları ayrıca otomatik testlerde doğrulandı.

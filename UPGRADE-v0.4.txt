@@ -1,0 +1,22 @@
+ShakeChat v0.3 -> v0.4
+
+1) npm run dev varsa Ctrl+C ile durdur.
+2) Mevcut ShakeChat klasörünü yedekle.
+3) Bu ZIP içindeki guncelleme klasörünün İÇİNDEKİ dosyaları mevcut proje klasörünün üzerine kopyala.
+4) Docker Desktop açık olsun.
+5) Proje klasöründe:
+
+npm install
+npm run db:generate
+npm run db:migrate:v04
+npm run typecheck
+npm run build
+npm test
+npm run dev
+
+Migration reset istememeli. Eğer Prisma veritabanını sıfırlamak isterse ONAYLAMA.
+
+docker compose down -v
+prisma migrate reset
+
+komutlarını kullanma.

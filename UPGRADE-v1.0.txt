@@ -1,0 +1,11 @@
+ShakeChat v0.9 -> v1.0
+
+1) npm run dev açıksa Ctrl+C
+2) guncelleme klasörünün içeriğini mevcut proje üzerine kopyala
+3) npm install
+4) npm run typecheck
+5) npm run build
+6) npm test
+7) npm run dev
+
+Migration yoktur. Veritabanını resetlemeyin.

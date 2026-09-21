@@ -1,0 +1,24 @@
+SHAKECHAT v0.2 -> v0.3
+
+1) npm run dev çalışan terminalde CTRL+C.
+2) Mevcut shakechat klasörünün yedeğini al.
+3) Bu paketteki guncelleme klasörünün İÇİNDEKİLERİ mevcut shakechat klasörüne kopyala.
+4) Docker Desktop açık olsun.
+5) Aynı proje klasöründe sırayla:
+
+   docker compose ps
+   npm install
+   npm run db:generate
+   npm run db:migrate:v03
+   npm run typecheck
+   npm run build
+   npm test
+   npm run dev
+
+Beklenen Docker servisleri: postgres, redis, minio, livekit = Up.
+
+ÖNEMLİ:
+- docker compose down -v ÇALIŞTIRMA.
+- prisma migrate reset ÇALIŞTIRMA.
+- Migration veri silmez; Invite tablosunu ekler.
+- Eğer Prisma migration geçmişiyle ilgili bir DRIFT/RESET uyarısı verirse reseti ONAYLAMA ve çıktıyı ChatGPT'ye gönder.

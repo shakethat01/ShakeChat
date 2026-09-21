@@ -1,0 +1,31 @@
+{
+  "name": "shakechat",
+  "private": true,
+  "version": "1.9.0",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n API,WEB -c auto \"npm run dev -w @shakechat/api\" \"npm run dev -w @shakechat/web\"",
+    "build": "npm run build -w @shakechat/api && npm run build -w @shakechat/web",
+    "db:generate": "npm run prisma:generate -w @shakechat/api",
+    "db:migrate": "npm run prisma:migrate -w @shakechat/api",
+    "typecheck": "tsc --noEmit -p apps/api/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json",
+    "test": "npm run build -w @shakechat/api && node --test tests/*.test.cjs && npm run test -w @shakechat/web",
+    "db:migrate:v03": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:migrate:v04": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:migrate:v05": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:migrate:v08": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:migrate:v09": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:migrate:v11": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:migrate:v12": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:migrate:v13": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:migrate:v15": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:migrate:v16": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:migrate:v17": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:migrate:v18": "prisma migrate deploy --schema apps/api/prisma/schema.prisma"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
