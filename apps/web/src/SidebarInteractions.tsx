@@ -36,7 +36,12 @@ function resolveServerFromButton(button:HTMLButtonElement, servers:Server[]){
 
 function activeServer(servers:Server[]){
   const active=document.querySelector<HTMLButtonElement>('.serverbar button.server.active');
-  return active ? resolveServerFromButton(active,servers) : undefined;
+  if(active){
+    const resolved=resolveServerFromButton(active,servers);
+    if(resolved)return resolved;
+  }
+  const title=document.querySelector<HTMLElement>('.space-header span')?.textContent?.trim();
+  return title ? servers.find(server=>server.name===title) : undefined;
 }
 
 function normalizedGroup(channel:Channel){
@@ -63,6 +68,11 @@ function groupLabelFromSection(section:HTMLElement){
 
 function resolveChannelFromButton(button:HTMLButtonElement, server?:Server){
   if(!server)return undefined;
+  const explicitId=button.dataset.channelId;
+  if(explicitId){
+    const byId=server.channels.find(channel=>channel.id===explicitId);
+    if(byId)return byId;
+  }
   const name=button.querySelector('.flow-name')?.textContent?.trim() || '';
   if(!name)return undefined;
   const group=button.closest('.flow-group')?.querySelector('.section')?.textContent?.trim().toLocaleUpperCase('tr-TR') || '';
@@ -90,7 +100,8 @@ export function SidebarInteractions(){
   const [notice,setNotice]=useState('');
   const noticeTimer=useRef<number|null>(null);
   const serversRef=useRef<Server[]>([]);
-  const manageServerRef=useRef<string>('');
+  const managePermissionsRef=useRef<Record<string,boolean>>({});
+  const permissionPendingRef=useRef<Set<string>>(new Set());
   const dragRef=useRef<DragState>(null);
   const collapsedRef=useRef<Record<string,boolean>>(loadCollapsedGroups());
 
@@ -127,6 +138,34 @@ export function SidebarInteractions(){
     first?.classList.add('sidebar-first-unread');
   }
 
+  function decorateSidebar(server?:Server){
+    const canManage=!!server && managePermissionsRef.current[server.id]===true;
+    document.querySelectorAll<HTMLButtonElement>('.flow-group button.channel').forEach(button=>{
+      button.draggable=canManage;
+      button.classList.toggle('channel-draggable',canManage);
+    });
+    applyGroupState(server);
+    markFirstUnread();
+  }
+
+  async function ensureManagePermission(server:Server,force=false){
+    if(!force && Object.prototype.hasOwnProperty.call(managePermissionsRef.current,server.id)){
+      decorateSidebar(server);
+      return managePermissionsRef.current[server.id];
+    }
+    if(permissionPendingRef.current.has(server.id))return managePermissionsRef.current[server.id]===true;
+    permissionPendingRef.current.add(server.id);
+    try{
+      const result=await api.myPermissions(server.id).catch(()=>({permissions:[] as Permission[]}));
+      const canManage=hasPermission(result.permissions,'MANAGE_CHANNELS');
+      managePermissionsRef.current[server.id]=canManage;
+      if(activeServer(serversRef.current)?.id===server.id)decorateSidebar(server);
+      return canManage;
+    }finally{
+      permissionPendingRef.current.delete(server.id);
+    }
+  }
+
   function setGroupCollapsed(server:Server,label:string,collapsed:boolean){
     const key=collapsedKey(server.id,label);
     if(collapsed)collapsedRef.current[key]=true; else delete collapsedRef.current[key];
@@ -135,35 +174,46 @@ export function SidebarInteractions(){
     markFirstUnread();
   }
 
-  async function refreshServers(){
+  async function refreshServers(forcePermission=false){
     try{
       const list=await api.servers();
       serversRef.current=list;
       setServers(list);
       const current=activeServer(list);
-      manageServerRef.current='';
       if(current){
-        const result=await api.myPermissions(current.id).catch(()=>({permissions:[] as Permission[]}));
-        manageServerRef.current=hasPermission(result.permissions,'MANAGE_CHANNELS')?current.id:'';
-        applyGroupState(current);
-        markFirstUnread();
+        decorateSidebar(current);
+        await ensureManagePermission(current,forcePermission);
       }
     }catch{/* Main app owns auth/error state. */}
   }
 
+  async function refreshWithoutReload(message:string){
+    showNotice(message);
+    setMenu(null);
+    await refreshServers(true);
+  }
+
   async function refreshAndReload(message:string){
     showNotice(message);
-    await refreshServers();
+    await refreshServers(true);
     window.setTimeout(()=>window.location.reload(),260);
   }
 
   useEffect(()=>{
-    void refreshServers();
-    const focus=()=>void refreshServers();
+    void refreshServers(true);
+    const focus=()=>void refreshServers(true);
     const click=(event:MouseEvent)=>{
       const target=event.target instanceof Element?event.target:null;
-      const serverButton=target?.closest('.serverbar button.server:not(.add)');
-      if(serverButton){window.setTimeout(()=>void refreshServers(),80);return}
+      const serverButton=target?.closest<HTMLButtonElement>('.serverbar button.server:not(.add)');
+      if(serverButton){
+        const selected=resolveServerFromButton(serverButton,serversRef.current);
+        if(selected){
+          decorateSidebar(selected);
+          void ensureManagePermission(selected,true);
+        }
+        window.setTimeout(()=>void refreshServers(true),80);
+        return;
+      }
       const section=target?.closest<HTMLElement>('.flow-group > .section');
       if(!section || event.button!==0)return;
       const server=activeServer(serversRef.current);
@@ -194,19 +244,14 @@ export function SidebarInteractions(){
   },[]);
 
   useEffect(()=>{
-    const decorateSidebar=()=>{
+    const decorate=()=>{
       const current=activeServer(serversRef.current);
-      const canManage=!!current && manageServerRef.current===current.id;
-      document.querySelectorAll<HTMLButtonElement>('.flow-group button.channel').forEach(button=>{
-        button.draggable=canManage;
-        button.classList.toggle('channel-draggable',canManage);
-      });
-      applyGroupState(current);
-      markFirstUnread();
+      decorateSidebar(current);
+      if(current && !Object.prototype.hasOwnProperty.call(managePermissionsRef.current,current.id))void ensureManagePermission(current);
     };
-    decorateSidebar();
+    decorate();
     const root=document.querySelector('.channel-list')||document.body;
-    const observer=new MutationObserver(decorateSidebar);
+    const observer=new MutationObserver(decorate);
     observer.observe(root,{subtree:true,childList:true});
     return()=>observer.disconnect();
   },[servers]);
@@ -230,6 +275,7 @@ export function SidebarInteractions(){
         const server=resolveServerFromButton(serverButton,list);
         if(!server)return;
         const permissions=(await api.myPermissions(server.id).catch(()=>({permissions:[] as Permission[]}))).permissions;
+        managePermissionsRef.current[server.id]=hasPermission(permissions,'MANAGE_CHANNELS');
         const point=clampMenuPoint(event.clientX,event.clientY,292,370);
         setMenu({kind:'server',...point,server,permissions});
         return;
@@ -241,6 +287,7 @@ export function SidebarInteractions(){
         if(!groupLabel)return;
         const channels=server.channels.filter(channel=>normalizedGroup(channel)===groupLabel);
         const permissions=(await api.myPermissions(server.id).catch(()=>({permissions:[] as Permission[]}))).permissions;
+        managePermissionsRef.current[server.id]=hasPermission(permissions,'MANAGE_CHANNELS');
         const point=clampMenuPoint(event.clientX,event.clientY,300,430);
         setMenu({kind:'group',...point,server,groupLabel,groupName:groupNameForLabel(server,groupLabel),channels,permissions,collapsed:isGroupCollapsed(server.id,groupLabel)});
         return;
@@ -248,6 +295,7 @@ export function SidebarInteractions(){
       const channel=resolveChannelFromButton(channelButton!,server);
       if(!channel)return;
       const permissions=(await api.myPermissions(server.id,channel.id).catch(()=>({permissions:[] as Permission[]}))).permissions;
+      managePermissionsRef.current[server.id]=hasPermission(permissions,'MANAGE_CHANNELS');
       const point=clampMenuPoint(event.clientX,event.clientY,300,480);
       setMenu({kind:'channel',...point,server,channel,permissions});
     };
@@ -277,7 +325,7 @@ export function SidebarInteractions(){
       if(!button||!button.draggable)return;
       const server=activeServer(serversRef.current);
       const channel=resolveChannelFromButton(button,server);
-      if(!server||!channel||manageServerRef.current!==server.id){event.preventDefault();return}
+      if(!server||!channel||managePermissionsRef.current[server.id]!==true){event.preventDefault();return}
       dragRef.current={serverId:server.id,channelId:channel.id};
       button.classList.add('channel-dragging');
       event.dataTransfer?.setData('text/plain',channel.id);
@@ -315,14 +363,14 @@ export function SidebarInteractions(){
           const targetChannels=server.channels.filter(channel=>normalizedGroup(channel)===label && channel.id!==source.id);
           const position=targetChannels.length?Math.max(...targetChannels.map(channel=>channel.position))+1:source.position;
           await api.updateChannel(server.id,source.id,{position,groupName:dropGroupName(server,label,source)});
-          await refreshAndReload(`${source.name} → ${prettifyGroupLabel(label)} taşındı.`);
+          await refreshWithoutReload(`${source.name} → ${prettifyGroupLabel(label)} taşındı.`);
           return;
         }
         const target=resolveChannelFromButton(targetButton!,server);
         if(!target||source.id===target.id)return;
         const targetGroupName=target.groupName?.trim() || (source.type===target.type ? '' : prettifyGroupLabel(normalizedGroup(target)));
         await api.updateChannel(server.id,source.id,{position:target.position,groupName:targetGroupName});
-        await refreshAndReload(`${source.name} taşındı.`);
+        await refreshWithoutReload(`${source.name} taşındı.`);
       }catch(error){showNotice(error instanceof Error?error.message:'Akış taşınamadı.')}
     };
     const onDragEnd=()=>{
@@ -372,7 +420,7 @@ export function SidebarInteractions(){
     if(name===null||!name.trim())return;
     try{
       await api.createChannel(group.server.id,name.trim(),type,group.groupName);
-      await refreshAndReload(`${name.trim()} oluşturuldu.`);
+      await refreshWithoutReload(`${name.trim()} oluşturuldu.`);
     }catch(error){showNotice(error instanceof Error?error.message:'Akış oluşturulamadı.')}
   }
 
@@ -382,20 +430,20 @@ export function SidebarInteractions(){
     const nextName=next.trim();
     try{
       await Promise.all(group.channels.map(channel=>api.updateChannel(group.server.id,channel.id,{groupName:nextName})));
-      await refreshAndReload(nextName?`Kategori ${nextName} olarak değiştirildi.`:'Kategori varsayılana döndürüldü.');
+      await refreshWithoutReload(nextName?`Kategori ${nextName} olarak değiştirildi.`:'Kategori varsayılana döndürüldü.');
     }catch(error){showNotice(error instanceof Error?error.message:'Kategori adı değiştirilemedi.')}
   }
 
   async function renameChannel(server:Server,channel:Channel){
     const next=prompt('Akış adını değiştir',channel.name);
     if(next===null||!next.trim()||next.trim()===channel.name)return;
-    try{await api.updateChannel(server.id,channel.id,{name:next.trim()});await refreshAndReload('Akış adı güncellendi.')}catch(error){showNotice(error instanceof Error?error.message:'Akış adı değiştirilemedi.')}
+    try{await api.updateChannel(server.id,channel.id,{name:next.trim()});await refreshWithoutReload('Akış adı güncellendi.')}catch(error){showNotice(error instanceof Error?error.message:'Akış adı değiştirilemedi.')}
   }
 
   async function changeGroup(server:Server,channel:Channel){
     const next=prompt('Bölüm adı (boş bırakırsan varsayılan bölüme döner)',channel.groupName||'');
     if(next===null)return;
-    try{await api.updateChannel(server.id,channel.id,{groupName:next.trim()});await refreshAndReload('Akış bölümü güncellendi.')}catch(error){showNotice(error instanceof Error?error.message:'Bölüm değiştirilemedi.')}
+    try{await api.updateChannel(server.id,channel.id,{groupName:next.trim()});await refreshWithoutReload('Akış bölümü güncellendi.')}catch(error){showNotice(error instanceof Error?error.message:'Bölüm değiştirilemedi.')}
   }
 
   async function moveChannel(server:Server,channel:Channel,delta:number){
@@ -403,17 +451,17 @@ export function SidebarInteractions(){
     const index=ordered.findIndex(item=>item.id===channel.id);
     const next=index+delta;
     if(index<0||next<0||next>=ordered.length)return;
-    try{await api.updateChannel(server.id,channel.id,{position:next});await refreshAndReload(delta<0?'Akış yukarı taşındı.':'Akış aşağı taşındı.')}catch(error){showNotice(error instanceof Error?error.message:'Akış taşınamadı.')}
+    try{await api.updateChannel(server.id,channel.id,{position:next});await refreshWithoutReload(delta<0?'Akış yukarı taşındı.':'Akış aşağı taşındı.')}catch(error){showNotice(error instanceof Error?error.message:'Akış taşınamadı.')}
   }
 
   async function toggleLock(server:Server,channel:Channel){
     if(channel.type!=='TEXT')return;
-    try{await api.updateChannel(server.id,channel.id,{isLocked:!channel.isLocked});await refreshAndReload(channel.isLocked?'Akış kilidi açıldı.':'Akış kilitlendi.')}catch(error){showNotice(error instanceof Error?error.message:'Akış kilidi değiştirilemedi.')}
+    try{await api.updateChannel(server.id,channel.id,{isLocked:!channel.isLocked});await refreshWithoutReload(channel.isLocked?'Akış kilidi açıldı.':'Akış kilitlendi.')}catch(error){showNotice(error instanceof Error?error.message:'Akış kilidi değiştirilemedi.')}
   }
 
   async function deleteChannel(server:Server,channel:Channel){
     if(!confirm(`${channel.name} akışı silinsin mi? İçindeki mesajlar da kalıcı olarak silinir.`))return;
-    try{await api.deleteChannel(server.id,channel.id);await refreshAndReload('Akış silindi.')}catch(error){showNotice(error instanceof Error?error.message:'Akış silinemedi.')}
+    try{await api.deleteChannel(server.id,channel.id);await refreshWithoutReload('Akış silindi.')}catch(error){showNotice(error instanceof Error?error.message:'Akış silinemedi.')}
   }
 
   const canManage=menu?hasPermission(menu.permissions,'MANAGE_CHANNELS'):false;
@@ -440,7 +488,7 @@ export function SidebarInteractions(){
 
     {menu?.kind==='channel'&&<div className="sidebar-context-menu channel-menu" role="menu" style={{left:menu.x,top:menu.y}} onPointerDown={event=>event.stopPropagation()} onContextMenu={event=>event.preventDefault()}>
       <div className="sidebar-context-head"><div className="sidebar-context-channel-icon">{menu.channel.type==='VOICE'?<Volume2 size={18}/>:<Hash size={18}/>}</div><div><b>{menu.channel.name}</b><small>{normalizedGroup(menu.channel)}</small></div></div>
-      <button onClick={()=>{const button=[...document.querySelectorAll<HTMLButtonElement>('.flow-group button.channel')].find(item=>item.querySelector('.flow-name')?.textContent?.trim()===menu.channel.name);button?.click();setMenu(null)}}>{menu.channel.type==='VOICE'?<Volume2 size={16}/>:<Hash size={16}/>}<span><b>{menu.channel.type==='VOICE'?'Ses kanalına katıl':'Akışı aç'}</b><small>Akışı seç</small></span></button>
+      <button onClick={()=>{const button=[...document.querySelectorAll<HTMLButtonElement>('.flow-group button.channel')].find(item=>item.dataset.channelId===menu.channel.id||item.querySelector('.flow-name')?.textContent?.trim()===menu.channel.name);button?.click();setMenu(null)}}>{menu.channel.type==='VOICE'?<Volume2 size={16}/>:<Hash size={16}/>}<span><b>{menu.channel.type==='VOICE'?'Ses kanalına katıl':'Akışı aç'}</b><small>Akışı seç</small></span></button>
       {menu.channel.type==='TEXT'&&<button onClick={()=>void api.markChannelRead(menu.channel.id).then(()=>refreshAndReload('Akış okundu işaretlendi.')).catch(error=>showNotice(error instanceof Error?error.message:'İşlem başarısız.'))}><CheckCheck size={16}/><span><b>Okundu işaretle</b><small>Bu akıştaki okunmamışları temizle</small></span></button>}
       {canManage&&<div className="sidebar-context-separator"><span>DÜZENLE</span></div>}
       {canManage&&<button onClick={()=>void renameChannel(menu.server,menu.channel)}><Edit3 size={16}/><span><b>Adını değiştir</b><small>{menu.channel.name}</small></span></button>}
