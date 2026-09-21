@@ -1,4 +1,7 @@
-export const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || 'http://localhost:4000';
+const configuredApiOrigin = (import.meta.env.VITE_API_ORIGIN as string | undefined)?.trim();
+export const API_ORIGIN = configuredApiOrigin === 'same-origin'
+  ? ''
+  : (configuredApiOrigin || 'http://localhost:4000');
 const API = `${API_ORIGIN}/api`;
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 export type ProfileMode = 'AVAILABLE'|'FOCUS'|'AWAY';
