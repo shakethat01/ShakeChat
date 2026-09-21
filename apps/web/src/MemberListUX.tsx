@@ -136,7 +136,7 @@ export function MemberListUX(){
     decorate();
     const root=document.querySelector('.app-shell')||document.body;
     const observer=new MutationObserver(decorate);
-    observer.observe(root,{subtree:true,childList:true});
+    observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:['data-user-id']});
 
     return()=>{
       observer.disconnect();
