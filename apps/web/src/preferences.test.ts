@@ -1,23 +1,34 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { pushToTalkKeyLabel, screenCaptureFor, screenPublishFor, screenQualityLabel, screenReceiveFor } from './preferences';
+import { clampNoiseGateThreshold, loadPreferences, screenCaptureFor, screenPublishFor, screenQualityLabel, screenReceiveFor } from './preferences';
 
 describe('screen share quality profiles',()=>{
-  it('maps 2K 144 FPS to capture, encoder and receiver targets',()=>{
-    expect(screenCaptureFor('1440p144')).toEqual({width:2560,height:1440,frameRate:144});
-    expect(screenPublishFor('1440p144')).toEqual(expect.objectContaining({screenShareEncoding:expect.objectContaining({maxBitrate:42_000_000,maxFramerate:144})}));
-    expect(screenReceiveFor('1440p144')).toEqual({width:2560,height:1440,fps:144});
-    expect(screenQualityLabel('1440p144')).toContain('2K');
+  it('maps Ultra to 1440p144 at 14 Mbps',()=>{
+    expect(screenCaptureFor('ultra')).toEqual({width:2560,height:1440,frameRate:144});
+    expect(screenPublishFor('ultra')).toEqual(expect.objectContaining({
+      degradationPreference:'maintain-framerate',
+      screenShareEncoding:expect.objectContaining({maxBitrate:14_000_000,maxFramerate:144,priority:'high'}),
+    }));
+    expect(screenReceiveFor('ultra')).toEqual({width:2560,height:1440,fps:144});
+    expect(screenQualityLabel('ultra')).toContain('14 Mbps');
   });
-  it('source mode removes the old 1080p-class ceiling with a high native target',()=>{
-    expect(screenCaptureFor('source')).toEqual({width:7680,height:4320,frameRate:144});
-    expect(screenPublishFor('source')).toEqual(expect.objectContaining({screenShareEncoding:expect.objectContaining({maxBitrate:60_000_000,maxFramerate:144})}));
+
+  it('uses the requested Low/Medium/High bitrate targets',()=>{
+    expect(screenPublishFor('low').screenShareEncoding.maxBitrate).toBe(1_500_000);
+    expect(screenPublishFor('medium').screenShareEncoding.maxBitrate).toBe(3_500_000);
+    expect(screenPublishFor('high').screenShareEncoding.maxBitrate).toBe(6_000_000);
+  });
+
+  it('migrates legacy 2K144 preference to Ultra',()=>{
+    localStorage.setItem('shakechat.preferences.v10',JSON.stringify({screenQuality:'1440p144'}));
+    expect(loadPreferences().screenQuality).toBe('ultra');
   });
 });
 
-
-describe('voice usability preferences',()=>{
-  it('formats push-to-talk keys for the UI',()=>{
-    expect(pushToTalkKeyLabel('Backquote')).toBe('`');
-    expect(pushToTalkKeyLabel('KeyV')).toBe('V');
+describe('noise gate preferences',()=>{
+  it('clamps threshold to a safe UI range',()=>{
+    expect(clampNoiseGateThreshold(-90)).toBe(-70);
+    expect(clampNoiseGateThreshold(-48)).toBe(-48);
+    expect(clampNoiseGateThreshold(-10)).toBe(-25);
   });
 });

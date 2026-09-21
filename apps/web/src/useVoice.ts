@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Participant, RemoteTrackPublication, Room, RoomEvent, Track, TrackPublication, VideoQuality } from 'livekit-client';
+import { LocalAudioTrack, LocalTrackPublication, Participant, RemoteTrackPublication, Room, RoomEvent, Track, TrackPublication, VideoQuality } from 'livekit-client';
 import { api } from './api';
-import { AppPreferences, DEFAULT_PREFERENCES, cameraCaptureFor, pushToTalkKeyLabel, screenCaptureFor, screenPublishFor } from './preferences';
+import { AppPreferences, DEFAULT_PREFERENCES, cameraCaptureFor, pushToTalkKeyLabel, screenCaptureFor, screenPublishFor, screenQualityLabel } from './preferences';
+import { NoiseGateProcessor } from './noiseGate';
 
 export type VoiceParticipant = {
   identity: string;
@@ -31,6 +32,12 @@ export function publicationIsActive(
 }
 
 const VOICE_VOLUME_STORAGE_KEY = 'shakechat.voice-user-volumes.v14';
+const MICROPHONE_PUBLISH_OPTIONS = {
+  audioPreset: { maxBitrate: 192_000, priority: 'high' as const },
+  dtx: true,
+  red: true,
+  stopMicTrackOnMute: false,
+};
 
 export function clampVoiceVolume(value: number) {
   if (!Number.isFinite(value)) return 100;
@@ -60,6 +67,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
   const locallyMutedRef = useRef(new Set<string>());
   const pttHeldRef = useRef(false);
   const pttOperationRef = useRef(0);
+  const noiseGateProcessorRef = useRef<NoiseGateProcessor | null>(null);
   const participantVolumesRef = useRef<Record<string, number>>(loadVoiceVolumes());
   const [status, setStatus] = useState<VoiceStatus>('disconnected');
   const [channelId, setChannelId] = useState('');
@@ -79,6 +87,52 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>(() => participantVolumesRef.current);
   const [locallyMutedParticipants, setLocallyMutedParticipants] = useState<string[]>([]);
   const [pushToTalkActive, setPushToTalkActive] = useState(false);
+
+  const microphoneCaptureOptions = useCallback((deviceId?: string) => ({
+    sampleRate: 48_000,
+    channelCount: 2,
+    echoCancellation: preferences.echoCancellation,
+    noiseSuppression: preferences.noiseSuppression,
+    autoGainControl: preferences.autoGainControl,
+    ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+  }), [preferences.autoGainControl, preferences.echoCancellation, preferences.noiseSuppression]);
+
+  const applyMicrophoneTuning = useCallback(async (room: Room, publication?: LocalTrackPublication) => {
+    const activePublication = publication ?? room.localParticipant.getTrackPublication(Track.Source.Microphone) as LocalTrackPublication | undefined;
+    const track = activePublication?.track;
+    if (!(track instanceof LocalAudioTrack)) return;
+    await track.applyConstraints({
+      echoCancellation: preferences.echoCancellation,
+      noiseSuppression: preferences.noiseSuppression,
+      autoGainControl: preferences.autoGainControl,
+    }).catch(() => undefined);
+    let gate = noiseGateProcessorRef.current;
+    if (!gate) {
+      gate = new NoiseGateProcessor(preferences.noiseGateEnabled, preferences.noiseGateThreshold);
+      noiseGateProcessorRef.current = gate;
+    } else {
+      gate.setSettings(preferences.noiseGateEnabled, preferences.noiseGateThreshold);
+    }
+    if (track.getProcessor()?.name !== gate.name) await track.setProcessor(gate);
+    console.info('[voice] applied mic constraints', {
+      sampleRate: 48_000,
+      channelCount: 2,
+      echoCancellation: preferences.echoCancellation,
+      noiseSuppression: preferences.noiseSuppression,
+      autoGainControl: preferences.autoGainControl,
+    });
+    console.info('[voice] applied noise gate settings', { enabled: preferences.noiseGateEnabled, thresholdDb: preferences.noiseGateThreshold });
+    console.info('[voice] applied audio bitrate', { maxBitrate: 192_000, priority: 'high', codec: 'opus-preferred-by-webrtc' });
+  }, [preferences.autoGainControl, preferences.echoCancellation, preferences.noiseGateEnabled, preferences.noiseGateThreshold, preferences.noiseSuppression]);
+
+  const setMicrophone = useCallback(async (room: Room, enabled: boolean, deviceId?: string) => {
+    if (!enabled) {
+      await room.localParticipant.setMicrophoneEnabled(false);
+      return;
+    }
+    const publication = await room.localParticipant.setMicrophoneEnabled(true, microphoneCaptureOptions(deviceId), MICROPHONE_PUBLISH_OPTIONS);
+    if (publication) await applyMicrophoneTuning(room, publication);
+  }, [applyMicrophoneTuning, microphoneCaptureOptions]);
 
   const syncParticipants = useCallback((room: Room) => {
     const all: Participant[] = [room.localParticipant, ...room.remoteParticipants.values()];
@@ -178,6 +232,9 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
     pttOperationRef.current += 1;
     setPushToTalkActive(false);
     removeAudioElements();
+    const gate = noiseGateProcessorRef.current;
+    noiseGateProcessorRef.current = null;
+    if (gate) void gate.destroy();
     if (room) {
       try { await room.disconnect(true); } catch { /* Already disconnected. */ }
     }
@@ -196,6 +253,8 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
         adaptiveStream: true,
         dynacast: true,
         audioCaptureDefaults: {
+          sampleRate: 48_000,
+          channelCount: 2,
           echoCancellation: preferences.echoCancellation,
           noiseSuppression: preferences.noiseSuppression,
           autoGainControl: preferences.autoGainControl,
@@ -276,6 +335,9 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
         pttOperationRef.current += 1;
         setPushToTalkActive(false);
         removeAudioElements();
+        const gate = noiseGateProcessorRef.current;
+        noiseGateProcessorRef.current = null;
+        if (gate) void gate.destroy();
       });
       room.on(RoomEvent.MediaDevicesChanged, () => { void refreshDevices(false); });
 
@@ -286,7 +348,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       setStatus('connected');
       if (credentials.canSpeak) {
         const openMic = preferences.voiceInputMode === 'voice_activity';
-        await room.localParticipant.setMicrophoneEnabled(openMic);
+        await setMicrophone(room, openMic, inputDeviceId || undefined);
         setMuted(!openMic);
       } else {
         setMuted(true);
@@ -313,7 +375,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       if (room) try { await room.disconnect(true); } catch { /* ignore */ }
       onError(error instanceof Error ? error.message : 'Ses kanalına bağlanılamadı.');
     }
-  }, [enabled, leave, onError, preferences.autoGainControl, preferences.echoCancellation, preferences.noiseSuppression, preferences.voiceInputMode, refreshDevices, removeAudioElements, status, syncParticipants]);
+  }, [enabled, inputDeviceId, leave, onError, preferences.autoGainControl, preferences.echoCancellation, preferences.noiseSuppression, preferences.voiceInputMode, refreshDevices, removeAudioElements, setMicrophone, status, syncParticipants]);
 
   const toggleMute = useCallback(async () => {
     const room = roomRef.current;
@@ -322,11 +384,11 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
     if (preferences.voiceInputMode === 'push_to_talk') { onError(`Bas-konuş etkin. ${pushToTalkKeyLabel(preferences.pushToTalkKey)} tuşunu basılı tut.`); return; }
     try {
       const enable = muted;
-      await room.localParticipant.setMicrophoneEnabled(enable);
+      await setMicrophone(room, enable, inputDeviceId || undefined);
       setMuted(!enable);
       syncParticipants(room);
     } catch (error) { onError(error instanceof Error ? error.message : 'Mikrofon durumu değiştirilemedi.'); }
-  }, [canSpeak, muted, onError, preferences.pushToTalkKey, preferences.voiceInputMode, syncParticipants]);
+  }, [canSpeak, inputDeviceId, muted, onError, preferences.pushToTalkKey, preferences.voiceInputMode, setMicrophone, syncParticipants]);
 
   const toggleDeafen = useCallback(async () => {
     const next = !deafenedRef.current;
@@ -337,12 +399,12 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
     }
     const room = roomRef.current;
     if (next && room?.localParticipant.isMicrophoneEnabled) {
-      try { await room.localParticipant.setMicrophoneEnabled(false); setMuted(true); syncParticipants(room); } catch { /* Deafen still applies to playback. */ }
+      try { await setMicrophone(room, false); setMuted(true); syncParticipants(room); } catch { /* Deafen still applies to playback. */ }
     }
     if (!next) {
       try { await room?.startAudio(); } catch { /* Browser may still require another interaction. */ }
     }
-  }, [syncParticipants]);
+  }, [setMicrophone, syncParticipants]);
 
   const toggleCamera = useCallback(async () => {
     const room = roomRef.current;
@@ -366,6 +428,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       const enable = !screenSharing;
       const resolution = enable ? screenCaptureFor(preferences.screenQuality) : undefined;
       const publishOptions = enable ? screenPublishFor(preferences.screenQuality) : undefined;
+      console.info('[voice] selected screen preset', { preset: preferences.screenQuality, label: screenQualityLabel(preferences.screenQuality), capture: resolution, publish: publishOptions?.screenShareEncoding });
       const publication = await room.localParticipant.setScreenShareEnabled(
         enable,
         enable ? {
@@ -377,6 +440,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       );
       if (enable && resolution) {
         const mediaTrack = publication?.videoTrack?.mediaStreamTrack;
+        if (mediaTrack) mediaTrack.contentHint = resolution.frameRate >= 60 ? 'motion' : 'detail';
         if (mediaTrack?.applyConstraints) {
           try {
             await mediaTrack.applyConstraints({
@@ -389,7 +453,23 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
             // LiveKit constraints remain active when post-capture tuning is rejected.
           }
         }
+        const actual = mediaTrack?.getSettings?.();
+        console.info('[voice] applied video bitrate/FPS', {
+          preset: preferences.screenQuality,
+          requestedFps: resolution.frameRate,
+          actualFps: actual?.frameRate,
+          width: actual?.width,
+          height: actual?.height,
+          maxBitrate: publishOptions?.screenShareEncoding?.maxBitrate,
+          contentHint: mediaTrack?.contentHint,
+        });
+        if (preferences.screenQuality === 'ultra' && actual?.frameRate && actual.frameRate < 144) {
+          console.warn('[voice] Ultra capture returned below target FPS', { target: 144, actual: actual.frameRate });
+        }
       }
+      const micPublication = room.localParticipant.getTrackPublication(Track.Source.Microphone) as LocalTrackPublication | undefined;
+      if (muted && micPublication && !micPublication.isMuted) await setMicrophone(room, false);
+      if (!muted && canSpeak && (!micPublication || micPublication.isMuted)) await setMicrophone(room, true, inputDeviceId || undefined);
       setScreenSharing(enable);
       syncParticipants(room);
     } catch (error) {
@@ -397,35 +477,52 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       if (!/cancel|denied|permission/i.test(message)) onError(message);
       syncParticipants(room);
     }
-  }, [canSpeak, onError, preferences.screenQuality, screenSharing, syncParticipants]);
+  }, [canSpeak, inputDeviceId, muted, onError, preferences.screenQuality, screenSharing, setMicrophone, syncParticipants]);
 
   useEffect(() => {
     const room = roomRef.current;
-    const track = room?.localParticipant.getTrackPublication(Track.Source.Microphone)?.track;
-    if (!track || !("applyConstraints" in track)) return;
-    const apply = (track as unknown as { applyConstraints?: (constraints: { echoCancellation?: boolean; noiseSuppression?: boolean; autoGainControl?: boolean }) => Promise<void> }).applyConstraints;
-    if (!apply) return;
-    void apply.call(track, {
-      echoCancellation: preferences.echoCancellation,
-      noiseSuppression: preferences.noiseSuppression,
-      autoGainControl: preferences.autoGainControl,
-    }).catch(() => { /* Browser may not support changing every constraint while live. */ });
-  }, [preferences.autoGainControl, preferences.echoCancellation, preferences.noiseSuppression]);
+    if (!room) return;
+    const publication = room.localParticipant.getTrackPublication(Track.Source.Microphone) as LocalTrackPublication | undefined;
+    if (!publication?.track) return;
+    void applyMicrophoneTuning(room, publication).catch(() => { /* Runtime tuning is best effort. */ });
+  }, [applyMicrophoneTuning]);
 
   const switchInput = useCallback(async (deviceId: string) => {
     setInputDeviceId(deviceId);
     const room = roomRef.current;
     if (!room || !deviceId) return;
-    try { await room.switchActiveDevice('audioinput', deviceId); }
-    catch (error) { onError(error instanceof Error ? error.message : 'Mikrofon değiştirilemedi.'); }
-  }, [onError]);
+    console.info('[voice] selected input device', { deviceId });
+    try {
+      const publication = room.localParticipant.getTrackPublication(Track.Source.Microphone) as LocalTrackPublication | undefined;
+      const track = publication?.track;
+      if (track instanceof LocalAudioTrack && !publication?.isMuted) {
+        const oldTrackId = track.mediaStreamTrack.id;
+        console.info('[voice] old mic track stopped/restarted', { oldTrackId });
+        await track.restartTrack(microphoneCaptureOptions(deviceId));
+        await applyMicrophoneTuning(room, publication);
+        console.info('[voice] new mic track created', { newTrackId: track.mediaStreamTrack.id, deviceId });
+        console.info('[voice] mic sender replaced for peer', { strategy: 'LiveKit LocalAudioTrack.restartTrack' });
+      } else {
+        await room.switchActiveDevice('audioinput', deviceId);
+      }
+      console.info('[voice] input device applied', { deviceId });
+      await refreshDevices(false);
+      syncParticipants(room);
+    } catch (error) { onError(error instanceof Error ? error.message : 'Mikrofon değiştirilemedi.'); }
+  }, [applyMicrophoneTuning, microphoneCaptureOptions, onError, refreshDevices, syncParticipants]);
 
   const switchOutput = useCallback(async (deviceId: string) => {
     setOutputDeviceId(deviceId);
     const room = roomRef.current;
     if (!room || !deviceId) return;
-    try { await room.switchActiveDevice('audiooutput', deviceId); }
-    catch { onError('Bu tarayıcı hoparlör seçimini desteklemiyor olabilir.'); }
+    try {
+      await room.switchActiveDevice('audiooutput', deviceId);
+      await Promise.all([...audioElements.current].map(async element => {
+        const sinkElement = element as HTMLMediaElement & { setSinkId?: (sinkId: string) => Promise<void> };
+        if (sinkElement.setSinkId) await sinkElement.setSinkId(deviceId);
+      }));
+      console.info('[voice] output device applied', { deviceId, elements: audioElements.current.size });
+    } catch { onError('Bu tarayıcı hoparlör seçimini desteklemiyor olabilir.'); }
   }, [onError]);
 
   const switchCamera = useCallback(async (deviceId: string) => {

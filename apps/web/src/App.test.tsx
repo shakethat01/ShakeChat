@@ -96,12 +96,12 @@ it('opens server-wide message search from the flow header',async()=>{
  expect(await screen.findByText('aranan mesaj')).toBeTruthy();expect(mocks.searchMessages).toHaveBeenCalledWith('server','aranan');
 });
 
-it('stores original ShakeChat appearance and 2K144 screen-share preferences locally',async()=>{
+it('stores original ShakeChat appearance and Ultra screen-share preferences locally',async()=>{
  const user=userEvent.setup();localStorage.removeItem('shakechat.preferences.v10');render(<App/>);await screen.findByText('Friends');
  await user.click(screen.getByRole('button',{name:'Uygulama ayarları'}));expect(screen.getByRole('dialog',{name:'Hesap ve oturum güvenliği'})).toBeTruthy();
  await user.click(screen.getByRole('button',{name:'Görünüm'}));await user.click(screen.getByRole('button',{name:/Gelgit/}));await user.click(screen.getByRole('button',{name:'Ses & görüntü'}));
- await user.selectOptions(screen.getByLabelText('Ekran paylaşımı kalite profili'),'1440p144');await user.click(screen.getByRole('button',{name:'Ayarları kaydet'}));
- const saved=JSON.parse(localStorage.getItem('shakechat.preferences.v10')||'{}');expect(saved.theme).toBe('tide');expect(saved.screenQuality).toBe('1440p144');
+ await user.selectOptions(screen.getByLabelText('Ekran paylaşımı kalite profili'),'ultra');await user.click(screen.getByRole('button',{name:'Ayarları kaydet'}));
+ const saved=JSON.parse(localStorage.getItem('shakechat.preferences.v10')||'{}');expect(saved.theme).toBe('tide');expect(saved.screenQuality).toBe('ultra');
 });
 
 

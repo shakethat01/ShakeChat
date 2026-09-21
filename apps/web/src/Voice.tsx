@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { Camera, CameraOff, Focus, Grid2X2, Headphones, Maximize2, Mic, MicOff, MonitorUp, PhoneOff, Radio, ScreenShareOff, Volume2, VolumeX } from 'lucide-react';
 import { VoiceParticipant, VoiceVideoTrack } from './useVoice';
@@ -46,7 +46,9 @@ function pttLabel(voice:VoiceState){return `Bas-konuş · ${pushToTalkKeyLabel(v
 function VideoTile({item,featured,onToggleFeature}:{item:VoiceVideoTrack;featured:boolean;onToggleFeature:()=>void}){
   const ref=useRef<HTMLVideoElement>(null);
   const shellRef=useRef<HTMLDivElement>(null);
+  const clickTimer=useRef<number|null>(null);
   const [metrics,setMetrics]=useState('');
+  useEffect(()=>()=>{if(clickTimer.current!==null)window.clearTimeout(clickTimer.current)},[]);
   useEffect(()=>{
     const element=ref.current;
     const track=item.publication.videoTrack;
@@ -101,11 +103,23 @@ function VideoTile({item,featured,onToggleFeature}:{item:VoiceVideoTrack;feature
     }catch{/* Fullscreen support/permission is browser dependent. */}
   }
 
-  return <div ref={shellRef} className={`video-tile ${item.source==='screen'?'screen':''} ${featured?'featured':''}`}>
+  function tileClick(event:MouseEvent<HTMLDivElement>){
+    if((event.target as HTMLElement).closest('button'))return;
+    if(clickTimer.current!==null)window.clearTimeout(clickTimer.current);
+    clickTimer.current=window.setTimeout(()=>{clickTimer.current=null;onToggleFeature()},220);
+  }
+
+  function tileDoubleClick(event:MouseEvent<HTMLDivElement>){
+    if((event.target as HTMLElement).closest('button'))return;
+    if(clickTimer.current!==null){window.clearTimeout(clickTimer.current);clickTimer.current=null}
+    void fullscreen();
+  }
+
+  return <div ref={shellRef} className={`video-tile ${item.source==='screen'?'screen':''} ${featured?'featured':''}`} onClick={tileClick} onDoubleClick={tileDoubleClick}>
     <video ref={ref} autoPlay playsInline muted={item.local}/>
     <div className="video-tile-actions">
-      <button type="button" aria-label={`${item.name} görüntüsünü ${featured?'ızgaraya döndür':'öne çıkar'}`} title={featured?'Izgaraya döndür':'Öne çıkar'} onClick={onToggleFeature}>{featured?<Grid2X2 size={15}/>:<Focus size={15}/>}</button>
-      <button type="button" aria-label={`${item.name} görüntüsünü tam ekran yap`} title="Tam ekran" onClick={()=>void fullscreen()}><Maximize2 size={15}/></button>
+      <button type="button" aria-label={`${item.name} görüntüsünü ${featured?'ızgaraya döndür':'öne çıkar'}`} title={featured?'Izgaraya döndür':'Öne çıkar'} onClick={e=>{e.stopPropagation();onToggleFeature()}}>{featured?<Grid2X2 size={15}/>:<Focus size={15}/>}</button>
+      <button type="button" aria-label={`${item.name} görüntüsünü tam ekran yap`} title="Tam ekran" onClick={e=>{e.stopPropagation();void fullscreen()}}><Maximize2 size={15}/></button>
     </div>
     <div className="video-label"><span>{item.source==='screen'?<MonitorUp size={14}/>:<Camera size={14}/>}</span><span>{item.name}{item.local?' · Sen':''}{item.source==='screen'?' · Ekran':''}</span>{item.source==='screen'&&<span className="video-live-badge"><Radio size={11}/> CANLI</span>}{metrics&&<small className="video-metrics">{metrics}</small>}</div>
   </div>;
