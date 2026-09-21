@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Camera, CameraOff, Headphones, Mic, MicOff, MonitorUp, PhoneOff, Radio, ScreenShareOff, Volume2, VolumeX } from 'lucide-react';
+import { Camera, CameraOff, Focus, Grid2X2, Headphones, Maximize2, Mic, MicOff, MonitorUp, PhoneOff, Radio, ScreenShareOff, Volume2, VolumeX } from 'lucide-react';
 import { VoiceParticipant, VoiceVideoTrack } from './useVoice';
 import { VoiceInputMode, pushToTalkKeyLabel } from './preferences';
 
@@ -40,8 +40,9 @@ type VoiceState = {
 function deviceName(device:MediaDeviceInfo,index:number,prefix:string){return device.label||`${prefix} ${index+1}`}
 function pttLabel(voice:VoiceState){return `Bas-konuş · ${pushToTalkKeyLabel(voice.pushToTalkKey)}`}
 
-function VideoTile({item}:{item:VoiceVideoTrack}){
+function VideoTile({item,featured,onToggleFeature}:{item:VoiceVideoTrack;featured:boolean;onToggleFeature:()=>void}){
   const ref=useRef<HTMLVideoElement>(null);
+  const shellRef=useRef<HTMLDivElement>(null);
   const [metrics,setMetrics]=useState('');
   useEffect(()=>{
     const element=ref.current;
@@ -87,22 +88,42 @@ function VideoTile({item}:{item:VoiceVideoTrack}){
     const timer=window.setInterval(()=>void updateMetrics(),1000);
     return()=>{stopped=true;window.clearInterval(timer);try{track.detach(element)}catch{/* Track may already be unpublished. */}};
   },[item.publication,item.local]);
-  return <div className={`video-tile ${item.source==='screen'?'screen':''}`}>
+
+  async function fullscreen(){
+    const shell=shellRef.current;
+    if(!shell)return;
+    try{
+      if(document.fullscreenElement===shell)await document.exitFullscreen();
+      else await shell.requestFullscreen();
+    }catch{/* Fullscreen support/permission is browser dependent. */}
+  }
+
+  return <div ref={shellRef} className={`video-tile ${item.source==='screen'?'screen':''} ${featured?'featured':''}`}>
     <video ref={ref} autoPlay playsInline muted={item.local}/>
+    <div className="video-tile-actions">
+      <button type="button" aria-label={`${item.name} görüntüsünü ${featured?'ızgaraya döndür':'öne çıkar'}`} title={featured?'Izgaraya döndür':'Öne çıkar'} onClick={onToggleFeature}>{featured?<Grid2X2 size={15}/>:<Focus size={15}/>}</button>
+      <button type="button" aria-label={`${item.name} görüntüsünü tam ekran yap`} title="Tam ekran" onClick={()=>void fullscreen()}><Maximize2 size={15}/></button>
+    </div>
     <div className="video-label"><span>{item.source==='screen'?<MonitorUp size={14}/>:<Camera size={14}/>}</span><span>{item.name}{item.local?' · Sen':''}{item.source==='screen'?' · Ekran':''}</span>{item.source==='screen'&&<span className="video-live-badge"><Radio size={11}/> CANLI</span>}{metrics&&<small className="video-metrics">{metrics}</small>}</div>
   </div>;
 }
 
 export function VoicePanel({channelId,channelName,voice}:{channelId:string;channelName:string;voice:VoiceState}){
+  const [featuredId,setFeaturedId]=useState('');
   const active=voice.channelId===channelId&&voice.status!=='disconnected';
+  useEffect(()=>{if(featuredId&&!voice.videoTracks.some(track=>track.id===featuredId))setFeaturedId('')},[featuredId,voice.videoTracks]);
   if(!active)return <div className="voice-stage empty"><Volume2 size={46}/><h2>{channelName}</h2><p>Bu ses kanalına katılarak arkadaşlarınla konuşabilir, kamera veya ekran paylaşabilirsin.</p><button className="primary voice-join" onClick={()=>void voice.join(channelId)} disabled={voice.status==='connecting'}>{voice.status==='connecting'?'Bağlanıyor…':'Ses kanalına katıl'}</button></div>;
   const screens=voice.videoTracks.filter(track=>track.source==='screen');
   const cameras=voice.videoTracks.filter(track=>track.source==='camera');
   const liveCount=voice.participants.filter(person=>person.screen).length;
+  const videos=[...screens,...cameras].sort((a,b)=>Number(b.id===featuredId)-Number(a.id===featuredId));
   return <div className="voice-stage">
     <div className="voice-hero"><div><span className={`voice-status-dot ${voice.status==='connected'?'on':''}`}/><small>{voice.status==='reconnecting'?'Yeniden bağlanıyor':'SES & VİDEO BAĞLANTISI'}</small><h2>{channelName}</h2><p>{voice.participants.length} kişi bağlı{liveCount?` · ${liveCount} yayın canlı`:voice.videoTracks.length?` · ${voice.videoTracks.length} görüntü`:''}</p></div><button className="danger-btn" onClick={()=>void voice.leave()}><PhoneOff size={18}/> Bağlantıyı kes</button></div>
 
-    {voice.videoTracks.length>0&&<div className="video-stage" aria-label="Canlı görüntüler">{screens.map(item=><VideoTile key={item.id} item={item}/>)}{cameras.map(item=><VideoTile key={item.id} item={item}/>)}</div>}
+    {voice.videoTracks.length>0&&<>
+      <div className="stream-toolbar"><div><Radio size={15}/><span><b>CANLI YAYINLAR</b><small>{screens.length?`${screens.length} ekran paylaşımı`:''}{screens.length&&cameras.length?' · ':''}{cameras.length?`${cameras.length} kamera`:''}</small></span></div>{featuredId&&<button type="button" onClick={()=>setFeaturedId('')}><Grid2X2 size={14}/> Izgaraya dön</button>}</div>
+      <div className={`video-stage ${featuredId?'has-featured':''}`} aria-label="Canlı görüntüler">{videos.map(item=><VideoTile key={item.id} item={item} featured={item.id===featuredId} onToggleFeature={()=>setFeaturedId(current=>current===item.id?'':item.id)}/>)}</div>
+    </>}
 
     <div className="voice-grid">{voice.participants.map(person=>{
       const localMuted=voice.locallyMutedParticipants.includes(person.identity);
