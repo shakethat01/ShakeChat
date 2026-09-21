@@ -72,6 +72,21 @@ it('shows connected voice members and live stream state in the sidebar dock',()=
   expect(screen.getByText('Konuşuyor')).toBeTruthy();
 });
 
+it('lets a viewer focus a stream and return to the grid',async()=>{
+  const user=userEvent.setup();
+  const voice=voiceState({
+    participants:[{identity:'bob',name:'Bob',local:false,speaking:false,muted:false,camera:false,screen:true}],
+    videoTracks:[{id:'bob:screen:1',identity:'bob',name:'Bob',local:false,source:'screen',publication:{videoTrack:undefined}}],
+  });
+  render(<VoicePanel channelId="voice" channelName="General" voice={voice as any}/>);
+  expect(screen.getByText('CANLI YAYINLAR')).toBeTruthy();
+  await user.click(screen.getByRole('button',{name:'Bob görüntüsünü öne çıkar'}));
+  expect(screen.getByRole('button',{name:'Izgaraya dön'})).toBeTruthy();
+  expect(screen.getByRole('button',{name:'Bob görüntüsünü ızgaraya döndür'})).toBeTruthy();
+  await user.click(screen.getByRole('button',{name:'Izgaraya dön'}));
+  expect(screen.getByRole('button',{name:'Bob görüntüsünü öne çıkar'})).toBeTruthy();
+});
+
 it('clamps per-user playback volume to browser-safe limits',()=>{
   expect(clampVoiceVolume(-10)).toBe(0);
   expect(clampVoiceVolume(55.4)).toBe(55);
