@@ -9,28 +9,19 @@ function Stop-Tree([int]$ProcessId) {
 }
 
 function Stop-PortTree([int]$Port) {
+    if (-not $Port) { return }
     for ($i = 0; $i -lt 5; $i++) {
         $owners = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
             Select-Object -ExpandProperty OwningProcess -Unique)
         if (-not $owners -or $owners.Count -eq 0) { break }
-
         foreach ($owner in $owners) {
-            $target = [int]$owner
-            try {
-                $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$owner" -ErrorAction SilentlyContinue
-                if ($proc -and $proc.ParentProcessId) {
-                    $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.ParentProcessId)" -ErrorAction SilentlyContinue
-                    if ($parent -and $parent.Name -match '^(node|cmd|powershell|pwsh)\.exe$') {
-                        $target = [int]$parent.ProcessId
-                    }
-                }
-            } catch {}
-            Stop-Tree $target
+            Stop-Tree ([int]$owner)
         }
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 400
     }
 }
 
+$state = $null
 if (Test-Path $pidFile) {
     try {
         $state = Get-Content $pidFile -Raw | ConvertFrom-Json
@@ -41,7 +32,13 @@ if (Test-Path $pidFile) {
     Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
 }
 
-# Onceki Stop-Process tabanli surumlerden kalan orphan child processleri de temizle.
+# Son calismanin dinamik portlarini temizle.
+if ($state) {
+    if ($state.apiPort) { Stop-PortTree ([int]$state.apiPort) }
+    if ($state.webPort) { Stop-PortTree ([int]$state.webPort) }
+}
+
+# Eski sabit-portlu surumlerden kalmis child processleri de temizlemeye calis.
 Stop-PortTree 4001
 Stop-PortTree 5174
 
