@@ -19,9 +19,17 @@ function Wait-Port([int]$Port, [int]$Seconds = 45) {
             }
             $c.Close()
         } catch {}
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 350
     }
     return $false
+}
+
+function Get-FreeTcpPort([int]$StartPort, [int]$EndPort) {
+    $used = @([System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() | ForEach-Object { $_.Port })
+    for ($p = $StartPort; $p -le $EndPort; $p++) {
+        if ($used -notcontains $p) { return $p }
+    }
+    throw "$StartPort-$EndPort araliginda bos TCP port bulunamadi."
 }
 
 function Start-QuickTunnel([string]$Name, [string]$LocalUrl, [string]$Exe) {
@@ -73,18 +81,23 @@ Write-Host "==============================================" -ForegroundColor Dar
 Write-Host "Arkadaslar HICBIR SEY kurmayacak. Sadece linke tiklayacak." -ForegroundColor Green
 Write-Host ""
 
-# Eski public test npm/node child processleriyle birlikte tamamen kapat.
 $stopScript = Join-Path $root "stop-public-test-windows.ps1"
 if (Test-Path $stopScript) { & $stopScript }
-Start-Sleep -Seconds 1
+Start-Sleep -Milliseconds 700
 
 if (-not (Test-Path ".env") -or -not (Test-Path "apps/api/.env")) {
     throw "ShakeChat .env bulunamadi. Once .\start-windows.ps1 ile normal kurulumu bir kez calistir."
 }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw "Node.js bulunamadi." }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw "npm bulunamadi." }
-if (-not (Wait-Port 7880 3)) { throw "LiveKit 7880 calismiyor. .\start-windows.ps1 acik olmali." }
-if (-not (Wait-Port 9000 3)) { throw "MinIO 9000 calismiyor. .\start-windows.ps1 acik olmali." }
+if (-not (Wait-Port 7880 3)) { throw "LiveKit 7880 calismiyor. Docker/LiveKit acik olmali." }
+if (-not (Wait-Port 9000 3)) { throw "MinIO 9000 calismiyor. Docker/MinIO acik olmali." }
+
+# Sabit 4001/5174 yerine bos port sec. Eski/elevated orphan process kalsa bile yeni test cakismasin.
+$apiPort = Get-FreeTcpPort 4001 4099
+$webPort = Get-FreeTcpPort 5174 5274
+Write-Host "Public API local port: $apiPort" -ForegroundColor DarkGray
+Write-Host "Public Web local port: $webPort" -ForegroundColor DarkGray
 
 $cloudflared = Join-Path $toolsDir "cloudflared.exe"
 if (-not (Test-Path $cloudflared)) {
@@ -100,7 +113,7 @@ Remove-Item $apiOut, $apiErr, $webOut, $webErr -Force -ErrorAction SilentlyConti
 
 try {
     Write-Host "Public tuneller olusturuluyor..." -ForegroundColor Cyan
-    $webTunnel = Start-QuickTunnel "web" "http://127.0.0.1:5174" $cloudflared
+    $webTunnel = Start-QuickTunnel "web" "http://127.0.0.1:$webPort" $cloudflared
     $minioTunnel = Start-QuickTunnel "minio" "http://127.0.0.1:9000" $cloudflared
     $livekitTunnel = Start-QuickTunnel "livekit" "http://127.0.0.1:7880" $cloudflared
 
@@ -111,7 +124,7 @@ try {
     Write-Host "Public API baslatiliyor..." -ForegroundColor Cyan
     $apiCmd = @"
 Set-Location '$root'
-`$env:PORT='4001'
+`$env:PORT='$apiPort'
 `$env:WEB_ORIGIN='$webUrl'
 `$env:LIVEKIT_PUBLIC_URL='$livekitWs'
 `$env:MINIO_ENDPOINT='$($minioUri.Host)'
@@ -121,19 +134,19 @@ npm run dev --prefix apps/api
 "@
     $apiProc = Start-Process powershell.exe -ArgumentList @("-NoLogo", "-NoProfile", "-Command", $apiCmd) -PassThru -WindowStyle Hidden -RedirectStandardOutput $apiOut -RedirectStandardError $apiErr
 
-    if (-not (Wait-Port 4001 60)) {
+    if (-not (Wait-Port $apiPort 60)) {
         Show-LogTail $apiOut
         Show-LogTail $apiErr
-        throw "Public API 4001 acilmadi."
+        throw "Public API $apiPort acilmadi."
     }
-    Start-Sleep -Seconds 1
+    Start-Sleep -Milliseconds 700
     if ($apiProc.HasExited) {
         Show-LogTail $apiOut
         Show-LogTail $apiErr
-        throw "Yeni public API prosesi kapandi. Eski proses/port cakismasi olabilir."
+        throw "Yeni public API prosesi kapandi."
     }
 
-    $apiStatus = Get-HttpStatus "http://127.0.0.1:4001/api/auth/me"
+    $apiStatus = Get-HttpStatus "http://127.0.0.1:$apiPort/api/auth/me"
     if ($apiStatus -notin @(200,401,403)) {
         Show-LogTail $apiOut
         Show-LogTail $apiErr
@@ -144,24 +157,24 @@ npm run dev --prefix apps/api
     $webCmd = @"
 Set-Location '$root'
 `$env:VITE_API_ORIGIN='same-origin'
-`$env:SHAKECHAT_API_PROXY_TARGET='http://127.0.0.1:4001'
-npm run dev --prefix apps/web -- --host 127.0.0.1 --port 5174 --strictPort
+`$env:SHAKECHAT_API_PROXY_TARGET='http://127.0.0.1:$apiPort'
+npm run dev --prefix apps/web -- --host 127.0.0.1 --port $webPort --strictPort
 "@
     $webProc = Start-Process powershell.exe -ArgumentList @("-NoLogo", "-NoProfile", "-Command", $webCmd) -PassThru -WindowStyle Hidden -RedirectStandardOutput $webOut -RedirectStandardError $webErr
 
-    if (-not (Wait-Port 5174 60)) {
+    if (-not (Wait-Port $webPort 60)) {
         Show-LogTail $webOut
         Show-LogTail $webErr
-        throw "Public Web 5174 acilmadi."
+        throw "Public Web $webPort acilmadi."
     }
-    Start-Sleep -Seconds 1
+    Start-Sleep -Milliseconds 700
     if ($webProc.HasExited) {
         Show-LogTail $webOut
         Show-LogTail $webErr
-        throw "Yeni public Web prosesi kapandi. Eski proses/port cakismasi olabilir."
+        throw "Yeni public Web prosesi kapandi."
     }
 
-    $proxyStatus = Get-HttpStatus "http://127.0.0.1:5174/api/auth/me"
+    $proxyStatus = Get-HttpStatus "http://127.0.0.1:$webPort/api/auth/me"
     if ($proxyStatus -notin @(200,401,403)) {
         Show-LogTail $apiOut
         Show-LogTail $apiErr
@@ -171,7 +184,7 @@ npm run dev --prefix apps/web -- --host 127.0.0.1 --port 5174 --strictPort
     }
 
     $pids = @($webTunnel.Process.Id, $minioTunnel.Process.Id, $livekitTunnel.Process.Id, $apiProc.Id, $webProc.Id)
-    @{ pids = $pids; webUrl = $webUrl; startedAt = (Get-Date).ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $stateDir "pids.json") -Encoding UTF8
+    @{ pids = $pids; webUrl = $webUrl; apiPort = $apiPort; webPort = $webPort; startedAt = (Get-Date).ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $stateDir "pids.json") -Encoding UTF8
 
     Write-Host ""
     Write-Host "==============================================" -ForegroundColor Green
@@ -181,8 +194,8 @@ npm run dev --prefix apps/web -- --host 127.0.0.1 --port 5174 --strictPort
     Write-Host "ARKADASLARA SADECE BU LINKI AT:" -ForegroundColor Yellow
     Write-Host $webUrl -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "API direct test : HTTP $apiStatus" -ForegroundColor DarkGray
-    Write-Host "Web proxy test : HTTP $proxyStatus" -ForegroundColor DarkGray
+    Write-Host "API direct test : HTTP $apiStatus (port $apiPort)" -ForegroundColor DarkGray
+    Write-Host "Web proxy test  : HTTP $proxyStatus (port $webPort)" -ForegroundColor DarkGray
     Write-Host "Web + API + realtime TEK public origin uzerinden gidiyor." -ForegroundColor Green
     Write-Host "Ses/ekran: LiveKit signaling HTTPS/WSS tunelinden, medya 7881/TCP + 7882/UDP ile dogrudan PC'ye gelir." -ForegroundColor DarkYellow
     Write-Host ""
