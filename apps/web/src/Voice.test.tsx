@@ -2,7 +2,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
-import { VoicePanel } from './Voice';
+import { VoiceDock, VoicePanel } from './Voice';
 import { clampVoiceVolume, publicationIsActive } from './useVoice';
 
 function voiceState(overrides:Record<string,unknown>={}){
@@ -41,7 +41,6 @@ it('treats a muted camera publication as disabled so the tile and icon reset',()
   expect(publicationIsActive({track:undefined,isMuted:false} as any)).toBe(false);
 });
 
-
 it('shows push-to-talk state with the configured key',()=>{
   const voice=voiceState({inputMode:'push_to_talk',pushToTalkKey:'KeyV',muted:true});
   render(<VoicePanel channelId="voice" channelName="General" voice={voice as any}/>);
@@ -60,6 +59,18 @@ it('offers local volume and mute controls for remote participants',async()=>{
   expect(voice.toggleParticipantLocalMute).toHaveBeenCalledWith('bob');
 });
 
+it('shows connected voice members and live stream state in the sidebar dock',()=>{
+  const voice=voiceState({participants:[
+    {identity:'alice',name:'Alice',local:true,speaking:true,muted:false,camera:false,screen:false},
+    {identity:'bob',name:'Bob',local:false,speaking:false,muted:false,camera:false,screen:true},
+  ]});
+  render(<VoiceDock channelName="General" voice={voice as any}/>);
+  expect(screen.getByLabelText('Ses kanalındaki kullanıcılar')).toBeTruthy();
+  expect(screen.getByText('Alice · Sen')).toBeTruthy();
+  expect(screen.getByText('Bob')).toBeTruthy();
+  expect(screen.getByText('LIVE')).toBeTruthy();
+  expect(screen.getByText('Konuşuyor')).toBeTruthy();
+});
 
 it('clamps per-user playback volume to browser-safe limits',()=>{
   expect(clampVoiceVolume(-10)).toBe(0);
