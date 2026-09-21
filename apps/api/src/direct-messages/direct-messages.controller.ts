@@ -2,13 +2,18 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UploadedFiles, 
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '../auth/auth.guard';
 import { MessagesGateway } from '../messages/messages.gateway';
+import { DirectMessageAccessService } from './direct-message-access.service';
 import { DirectMessagesService } from './direct-messages.service';
 import { CreateGroupDmDto, DirectReactionDto, EditDirectMessageDto, SendDirectMessageDto } from './dto';
 
 @UseGuards(AuthGuard)
 @Controller('dms')
 export class DirectMessagesController {
-  constructor(private readonly dms: DirectMessagesService, private readonly gateway: MessagesGateway) {}
+  constructor(
+    private readonly dms: DirectMessagesService,
+    private readonly access: DirectMessageAccessService,
+    private readonly gateway: MessagesGateway,
+  ) {}
 
   @Get() list(@Req() req: any) { return this.dms.listConversations(req.user.sub); }
 
@@ -19,7 +24,11 @@ export class DirectMessagesController {
   markRead(@Req() req: any, @Param('conversationId') conversationId: string) { return this.dms.markRead(req.user.sub, conversationId); }
 
   @Post('with/:friendId')
-  open(@Req() req: any, @Param('friendId') friendId: string) { return this.dms.open(req.user.sub, friendId); }
+  async open(@Req() req: any, @Param('friendId') friendId: string) {
+    const conversation = await this.access.open(req.user.sub, friendId);
+    this.gateway.emitDirectConversationChanged(conversation.id, conversation.members.map((member: any) => member.id));
+    return conversation;
+  }
 
   @Post('group')
   async createGroup(@Req() req: any, @Body() dto: CreateGroupDmDto) {
