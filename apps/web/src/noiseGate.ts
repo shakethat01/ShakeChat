@@ -1,16 +1,31 @@
 import { Track } from 'livekit-client';
 import type { AudioProcessorOptions, TrackProcessor } from 'livekit-client';
-import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppressor';
+import type { RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppressor';
 import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url';
 import rnnoiseWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url';
 import rnnoiseWasmSimdPath from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url';
 
+type RnnoiseModule = typeof import('@sapphi-red/web-noise-suppressor');
+
+let rnnoiseModulePromise: Promise<RnnoiseModule> | undefined;
 let rnnoiseBinaryPromise: Promise<ArrayBuffer> | undefined;
 const rnnoiseReadyContexts = new WeakSet<AudioContext>();
 
+async function loadRnnoiseModule() {
+  if (!rnnoiseModulePromise) {
+    rnnoiseModulePromise = import('@sapphi-red/web-noise-suppressor').catch(error => {
+      rnnoiseModulePromise = undefined;
+      throw error;
+    });
+  }
+  return rnnoiseModulePromise;
+}
+
 async function prepareRnnoise(context: AudioContext) {
+  const rnnoiseModule = await loadRnnoiseModule();
+
   if (!rnnoiseBinaryPromise) {
-    rnnoiseBinaryPromise = loadRnnoise({
+    rnnoiseBinaryPromise = rnnoiseModule.loadRnnoise({
       url: rnnoiseWasmPath,
       simdUrl: rnnoiseWasmSimdPath,
     }).catch(error => {
@@ -24,7 +39,10 @@ async function prepareRnnoise(context: AudioContext) {
     rnnoiseReadyContexts.add(context);
   }
 
-  return rnnoiseBinaryPromise;
+  return {
+    wasmBinary: await rnnoiseBinaryPromise,
+    RnnoiseWorkletNode: rnnoiseModule.RnnoiseWorkletNode,
+  };
 }
 
 export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, AudioProcessorOptions> {
@@ -105,8 +123,8 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
 
     if (context.sampleRate === 48_000 && typeof AudioWorkletNode !== 'undefined') {
       try {
-        const wasmBinary = await prepareRnnoise(context);
-        const rnnoise = new RnnoiseWorkletNode(context, {
+        const { wasmBinary, RnnoiseWorkletNode: RnnoiseNode } = await prepareRnnoise(context);
+        const rnnoise = new RnnoiseNode(context, {
           wasmBinary,
           maxChannels: 2,
         });
@@ -130,8 +148,6 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     delay.connect(gain);
     gain.connect(destination);
 
-    // Keep a clean bypass path so disabling the advanced filter restores the
-    // original microphone track instead of merely opening the gate.
     source.connect(bypassGain);
     bypassGain.connect(destination);
 
@@ -186,8 +202,6 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     const db = 20 * Math.log10(Math.max(rms, 1e-7));
     const now = performance.now();
 
-    // The detector now sees RNNoise output rather than the raw microphone.
-    // That makes sharp keyboard transients much less likely to open the gate.
     if (now > this.openUntil && db < this.thresholdDb + 6) {
       this.noiseFloorDb = (this.noiseFloorDb * 0.97) + (db * 0.03);
     }
