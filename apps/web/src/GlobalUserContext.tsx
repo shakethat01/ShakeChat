@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Ban, Clock3, Copy, MessageCircle, Mic, MicOff, Radio, ShieldAlert, UserMinus, UserPlus, UserRound, Volume2, VolumeX, X } from 'lucide-react';
-import { api, BlockedUser, DirectConversation, Friend, FriendRequests, Member, Permission, Server, User } from './api';
+import { api, auth, BlockedUser, DirectConversation, Friend, FriendRequests, Member, Permission, Server, User } from './api';
 
 type ResolvedTarget = {
   user: User;
@@ -30,6 +30,15 @@ type VoiceSnapshot = {
   participants:VoiceContextParticipant[];
   participantVolumes:Record<string,number>;
   locallyMutedParticipants:string[];
+};
+
+type BaseSnapshot = {
+  user:User;
+  servers:Server[];
+  friends:Friend[];
+  requests:FriendRequests;
+  blocked:BlockedUser[];
+  dms:DirectConversation[];
 };
 
 type MemberRow = Awaited<ReturnType<typeof api.members>>[number];
@@ -83,6 +92,18 @@ function supportedTarget(start: EventTarget | null) {
   return start.closest('.voice-dock-member,.members .member,.members .group-member-list>div,.members .dm-profile,.messages article,.friends-home .social-row,.social-sidebar .dm-nav');
 }
 
+function usersFromSnapshot(snapshot:BaseSnapshot){
+  const map=new Map<string,User>();
+  const add=(user?:User|null)=>{if(user)map.set(user.id,user)};
+  add(snapshot.user);
+  snapshot.friends.forEach(add);
+  snapshot.requests.incoming.forEach(item=>add(item.user));
+  snapshot.requests.outgoing.forEach(item=>add(item.user));
+  snapshot.blocked.forEach(item=>add(item.user));
+  snapshot.dms.forEach(conversation=>{conversation.members.forEach(add);add(conversation.other)});
+  return [...map.values()];
+}
+
 export function GlobalUserContext() {
   const [me, setMe] = useState<User | null>(null);
   const [servers, setServers] = useState<Server[]>([]);
@@ -113,7 +134,8 @@ export function GlobalUserContext() {
     return [...map.values()];
   }, [me, friends, requests, blocked, dms, serverMembers]);
 
-  async function refreshBase() {
+  async function refreshBase():Promise<BaseSnapshot|undefined> {
+    if(!auth.token())return undefined;
     try {
       const [user, serverList, friendList, requestList, blockedList, conversations] = await Promise.all([
         api.me(), api.servers(), api.friends(), api.friendRequests(), api.blockedUsers(), api.dms(),
@@ -124,8 +146,10 @@ export function GlobalUserContext() {
       setRequests(requestList);
       setBlocked(blockedList);
       setDms(conversations);
+      return {user,servers:serverList,friends:friendList,requests:requestList,blocked:blockedList,dms:conversations};
     } catch {
       // The main app owns session/error handling. Context UI should never block it.
+      return undefined;
     }
   }
 
@@ -144,8 +168,8 @@ export function GlobalUserContext() {
     return undefined;
   }
 
-  async function loadActiveServerContext() {
-    let list = servers;
+  async function loadActiveServerContext(listOverride?:Server[]) {
+    let list = listOverride?.length ? listOverride : servers;
     if (!list.length) {
       try { list = await api.servers(); setServers(list); } catch { return { server: undefined, members: [] as Member[], permissions: [] as Permission[] }; }
     }
@@ -164,12 +188,12 @@ export function GlobalUserContext() {
     }
   }
 
-  function resolveByLabel(label: string, members: Member[]) {
+  function resolveByLabel(label: string, members: Member[], extraUsers:User[]=baseUsers) {
     const wanted = normalize(label);
     if (!wanted) return undefined;
     const candidates = new Map<string, User>();
     const add = (user: User) => candidates.set(user.id, user);
-    baseUsers.forEach(add);
+    extraUsers.forEach(add);
     members.forEach(add);
     const exactUsername = [...candidates.values()].find(user => normalize(user.username) === wanted);
     if (exactUsername) return exactUsername;
@@ -184,11 +208,14 @@ export function GlobalUserContext() {
   }
 
   useEffect(() => {
-    void refreshBase();
-    const socialRefresh = () => void refreshBase();
+    if(auth.token())void refreshBase();
+    const socialRefresh = () => {if(auth.token())void refreshBase()};
+    const visibilityRefresh=()=>{if(document.visibilityState==='visible'&&auth.token())void refreshBase()};
     window.addEventListener('focus', socialRefresh);
+    document.addEventListener('visibilitychange',visibilityRefresh);
     return () => {
       window.removeEventListener('focus', socialRefresh);
+      document.removeEventListener('visibilitychange',visibilityRefresh);
       if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
     };
   }, []);
@@ -205,16 +232,20 @@ export function GlobalUserContext() {
   useEffect(() => {
     const onContextMenu = async (event: MouseEvent) => {
       const targetElement = supportedTarget(event.target);
-      if (!targetElement) return;
+      if (!targetElement || !auth.token()) return;
       const label = extractTargetName(targetElement);
-      if (!label) return;
+      const directUserId=(targetElement as HTMLElement).dataset.userId;
+      const voiceIdentity=(targetElement as HTMLElement).dataset.voiceUserId;
+      if (!label && !directUserId && !voiceIdentity) return;
       event.preventDefault();
       event.stopPropagation();
-      const context = await loadActiveServerContext();
-      const voiceIdentity=(targetElement as HTMLElement).dataset.voiceUserId;
-      const user = voiceIdentity
-        ? (context.members.find(item=>item.id===voiceIdentity)||baseUsers.find(item=>item.id===voiceIdentity))
-        : resolveByLabel(label, context.members);
+      const fresh=(!me||!servers.length||!baseUsers.length)?await refreshBase():undefined;
+      const fallbackUsers=fresh?usersFromSnapshot(fresh):baseUsers;
+      const context = await loadActiveServerContext(fresh?.servers);
+      const resolvedId=voiceIdentity||directUserId;
+      const user = resolvedId
+        ? (context.members.find(item=>item.id===resolvedId)||fallbackUsers.find(item=>item.id===resolvedId))
+        : resolveByLabel(label, context.members, fallbackUsers);
       if (!user) {
         showNotice('Kullanıcı eşleştirilemedi. Profil adı benzersiz olmayabilir.');
         return;
@@ -241,7 +272,7 @@ export function GlobalUserContext() {
       window.removeEventListener('scroll', close, true);
       window.removeEventListener('keydown', key);
     };
-  }, [servers, baseUsers, serverMembers]);
+  }, [me, servers, baseUsers, serverMembers]);
 
   const target = menu?.target.user;
   const isSelf = !!target && target.id === me?.id;
@@ -282,15 +313,16 @@ export function GlobalUserContext() {
     try {
       await api.openDm(user.id);
       await refreshBase();
+      setMenu(null);
+      setProfile(null);
       (document.querySelector('.home') as HTMLButtonElement | null)?.click();
       const label = nameOf(user);
       for (let i = 0; i < 14; i++) {
         await new Promise(resolve => window.setTimeout(resolve, 90));
         const rows = [...document.querySelectorAll('.dm-nav')] as HTMLElement[];
-        const row = rows.find(item => normalize(item.querySelector('b')?.textContent) === normalize(label) || normalize(item.querySelector('b')?.textContent) === normalize(user.username));
+        const row = rows.find(item => item.dataset.userId===user.id || normalize(item.querySelector('b')?.textContent) === normalize(label) || normalize(item.querySelector('b')?.textContent) === normalize(user.username));
         if (row) { row.click(); break; }
       }
-      setMenu(null);
     } catch (error) {
       showNotice(error instanceof Error ? error.message : 'Özel mesaj açılamadı.');
     }
