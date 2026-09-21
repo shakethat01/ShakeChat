@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { VoiceDock, VoicePanel } from './Voice';
@@ -83,6 +83,22 @@ it('embeds voice members directly beneath the connected channel when its channel
   const slot=host.querySelector('.voice-channel-members-slot') as HTMLElement;
   expect(slot.textContent).toContain('Alice · Sen');
   expect(slot.textContent).toContain('Konuşuyor');
+});
+
+it('opens per-user audio controls from the voice member context menu',async()=>{
+  const user=userEvent.setup();
+  const remote={identity:'bob',name:'Bob',local:false,speaking:false,muted:false,camera:false,screen:false};
+  const voice=voiceState({participants:[remote],participantVolumes:{bob:65}});
+  render(<VoiceDock channelName="General" voice={voice as any}/>);
+  fireEvent.contextMenu(screen.getByText('Bob'),{clientX:120,clientY:160});
+  const menu=screen.getByRole('menu',{name:'Bob ses kontrolleri'});
+  expect(menu).toBeTruthy();
+  const slider=screen.getByRole('slider',{name:'Bob ses seviyesi hızlı menü'}) as HTMLInputElement;
+  expect(slider.value).toBe('65');
+  await user.click(screen.getByRole('button',{name:'Yerel sessize al'}));
+  expect(voice.toggleParticipantLocalMute).toHaveBeenCalledWith('bob');
+  await user.click(screen.getByRole('button',{name:'100%'}));
+  expect(voice.setParticipantVolume).toHaveBeenCalledWith('bob',100);
 });
 
 it('lets a viewer focus a stream and return to the grid',async()=>{
