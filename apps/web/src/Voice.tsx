@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Camera, CameraOff, Headphones, Mic, MicOff, MonitorUp, PhoneOff, ScreenShareOff, Volume2, VolumeX } from 'lucide-react';
+import { Camera, CameraOff, Headphones, Mic, MicOff, MonitorUp, PhoneOff, Radio, ScreenShareOff, Volume2, VolumeX } from 'lucide-react';
 import { VoiceParticipant, VoiceVideoTrack } from './useVoice';
 import { VoiceInputMode, pushToTalkKeyLabel } from './preferences';
 
@@ -89,7 +89,7 @@ function VideoTile({item}:{item:VoiceVideoTrack}){
   },[item.publication,item.local]);
   return <div className={`video-tile ${item.source==='screen'?'screen':''}`}>
     <video ref={ref} autoPlay playsInline muted={item.local}/>
-    <div className="video-label"><span>{item.source==='screen'?<MonitorUp size={14}/>:<Camera size={14}/>}</span><span>{item.name}{item.local?' · Sen':''}{item.source==='screen'?' · Ekran':''}</span>{metrics&&<small className="video-metrics">{metrics}</small>}</div>
+    <div className="video-label"><span>{item.source==='screen'?<MonitorUp size={14}/>:<Camera size={14}/>}</span><span>{item.name}{item.local?' · Sen':''}{item.source==='screen'?' · Ekran':''}</span>{item.source==='screen'&&<span className="video-live-badge"><Radio size={11}/> CANLI</span>}{metrics&&<small className="video-metrics">{metrics}</small>}</div>
   </div>;
 }
 
@@ -98,15 +98,16 @@ export function VoicePanel({channelId,channelName,voice}:{channelId:string;chann
   if(!active)return <div className="voice-stage empty"><Volume2 size={46}/><h2>{channelName}</h2><p>Bu ses kanalına katılarak arkadaşlarınla konuşabilir, kamera veya ekran paylaşabilirsin.</p><button className="primary voice-join" onClick={()=>void voice.join(channelId)} disabled={voice.status==='connecting'}>{voice.status==='connecting'?'Bağlanıyor…':'Ses kanalına katıl'}</button></div>;
   const screens=voice.videoTracks.filter(track=>track.source==='screen');
   const cameras=voice.videoTracks.filter(track=>track.source==='camera');
+  const liveCount=voice.participants.filter(person=>person.screen).length;
   return <div className="voice-stage">
-    <div className="voice-hero"><div><span className={`voice-status-dot ${voice.status==='connected'?'on':''}`}/><small>{voice.status==='reconnecting'?'Yeniden bağlanıyor':'SES & VİDEO BAĞLANTISI'}</small><h2>{channelName}</h2><p>{voice.participants.length} kişi bağlı{voice.videoTracks.length?` · ${voice.videoTracks.length} görüntü`:''}</p></div><button className="danger-btn" onClick={()=>void voice.leave()}><PhoneOff size={18}/> Bağlantıyı kes</button></div>
+    <div className="voice-hero"><div><span className={`voice-status-dot ${voice.status==='connected'?'on':''}`}/><small>{voice.status==='reconnecting'?'Yeniden bağlanıyor':'SES & VİDEO BAĞLANTISI'}</small><h2>{channelName}</h2><p>{voice.participants.length} kişi bağlı{liveCount?` · ${liveCount} yayın canlı`:voice.videoTracks.length?` · ${voice.videoTracks.length} görüntü`:''}</p></div><button className="danger-btn" onClick={()=>void voice.leave()}><PhoneOff size={18}/> Bağlantıyı kes</button></div>
 
     {voice.videoTracks.length>0&&<div className="video-stage" aria-label="Canlı görüntüler">{screens.map(item=><VideoTile key={item.id} item={item}/>)}{cameras.map(item=><VideoTile key={item.id} item={item}/>)}</div>}
 
     <div className="voice-grid">{voice.participants.map(person=>{
       const localMuted=voice.locallyMutedParticipants.includes(person.identity);
       const volume=voice.participantVolumes[person.identity]??100;
-      return <div className={`voice-person ${person.speaking&&!localMuted?'speaking':''}`} key={person.identity}><div className="voice-avatar">{person.name.slice(0,2).toUpperCase()}</div><div className="voice-person-main"><b>{person.name}{person.local?' · Sen':''}</b><span>{person.muted?<><MicOff size={14}/> Sessiz</>:person.speaking?<><Mic size={14}/> Konuşuyor</>:<><Mic size={14}/> Bağlı</>}{person.camera&&<Camera size={14}/>} {person.screen&&<MonitorUp size={14}/>}</span>{!person.local&&<div className="participant-audio-controls"><button type="button" aria-label={localMuted?`${person.name} sesini aç`:`${person.name} sesini kapat`} className={localMuted?'local-muted':''} onClick={()=>voice.toggleParticipantLocalMute(person.identity)}>{localMuted?<VolumeX size={14}/>:<Volume2 size={14}/>}</button><input aria-label={`${person.name} ses seviyesi`} type="range" min="0" max="100" step="5" value={volume} onChange={e=>voice.setParticipantVolume(person.identity,Number(e.target.value))}/><small>{localMuted?'Yerel sessiz':`${volume}%`}</small></div>}</div></div>
+      return <div className={`voice-person ${person.speaking&&!localMuted?'speaking':''} ${person.screen?'streaming':''}`} key={person.identity}><div className="voice-avatar">{person.name.slice(0,2).toUpperCase()}</div><div className="voice-person-main"><div className="voice-person-title"><b>{person.name}{person.local?' · Sen':''}</b>{person.screen&&<span className="voice-live-badge"><Radio size={11}/> YAYIN</span>}</div><span>{person.muted?<><MicOff size={14}/> Sessiz</>:person.speaking?<><Mic size={14}/> Konuşuyor</>:<><Mic size={14}/> Bağlı</>}{person.camera&&<Camera size={14}/>} {person.screen&&<MonitorUp size={14}/>}</span>{!person.local&&<div className="participant-audio-controls"><button type="button" aria-label={localMuted?`${person.name} sesini aç`:`${person.name} sesini kapat`} className={localMuted?'local-muted':''} onClick={()=>voice.toggleParticipantLocalMute(person.identity)}>{localMuted?<VolumeX size={14}/>:<Volume2 size={14}/>}</button><input aria-label={`${person.name} ses seviyesi`} type="range" min="0" max="100" step="5" value={volume} onChange={e=>voice.setParticipantVolume(person.identity,Number(e.target.value))}/><small>{localMuted?'Yerel sessiz':`${volume}%`}</small></div>}</div></div>
     })}</div>
 
     <div className="voice-controls">
@@ -127,5 +128,19 @@ export function VoicePanel({channelId,channelName,voice}:{channelId:string;chann
 
 export function VoiceDock({channelName,voice}:{channelName:string;voice:VoiceState}){
   if(!voice.channelId||voice.status==='disconnected')return null;
-  return <div className="voice-dock"><div><small>{voice.status==='reconnecting'?'Yeniden bağlanıyor…':'Ses bağlı'}</small><b>{channelName||'Ses kanalı'}</b></div><div className="voice-dock-actions"><button aria-label={!voice.canSpeak?'Konuşma yetkisi yok':voice.inputMode==='push_to_talk'?pttLabel(voice):(voice.muted?'Mikrofonu aç':'Mikrofonu kapat')} title={voice.inputMode==='push_to_talk'?pttLabel(voice):undefined} disabled={!voice.canSpeak} className={voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?'media-on':'active'):(voice.muted?'active':'')} onClick={()=>void voice.toggleMute()}>{voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?<Mic size={17}/>:<MicOff size={17}/>):voice.muted?<MicOff size={17}/>:<Mic size={17}/>}</button><button aria-label={voice.deafened?'Sesi aç':'Sağırlaştır'} className={voice.deafened?'active':''} onClick={()=>void voice.toggleDeafen()}><Headphones size={17}/></button><button aria-label={voice.cameraEnabled?'Kamerayı kapat':'Kamerayı aç'} disabled={!voice.canSpeak} className={voice.cameraEnabled?'media-on':''} onClick={()=>void voice.toggleCamera()}>{voice.cameraEnabled?<CameraOff size={17}/>:<Camera size={17}/>}</button><button aria-label={voice.screenSharing?'Ekran paylaşımını durdur':'Ekran paylaş'} disabled={!voice.canSpeak} className={voice.screenSharing?'media-on':''} onClick={()=>void voice.toggleScreenShare()}>{voice.screenSharing?<ScreenShareOff size={17}/>:<MonitorUp size={17}/>}</button><button aria-label="Ses bağlantısını kes" onClick={()=>void voice.leave()}><PhoneOff size={17}/></button></div></div>;
+  const liveCount=voice.participants.filter(person=>person.screen).length;
+  return <div className="voice-dock-shell">
+    <div className="voice-dock">
+      <div className="voice-dock-copy"><small>{voice.status==='reconnecting'?'Yeniden bağlanıyor…':'Ses bağlı'}</small><b>{channelName||'Ses kanalı'}</b><span>{voice.participants.length} kişi{liveCount?` · ${liveCount} yayın`:''}</span></div>
+      <div className="voice-dock-actions"><button aria-label={!voice.canSpeak?'Konuşma yetkisi yok':voice.inputMode==='push_to_talk'?pttLabel(voice):(voice.muted?'Mikrofonu aç':'Mikrofonu kapat')} title={voice.inputMode==='push_to_talk'?pttLabel(voice):undefined} disabled={!voice.canSpeak} className={voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?'media-on':'active'):(voice.muted?'active':'')} onClick={()=>void voice.toggleMute()}>{voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?<Mic size={17}/>:<MicOff size={17}/>):voice.muted?<MicOff size={17}/>:<Mic size={17}/>}</button><button aria-label={voice.deafened?'Sesi aç':'Sağırlaştır'} className={voice.deafened?'active':''} onClick={()=>void voice.toggleDeafen()}><Headphones size={17}/></button><button aria-label={voice.cameraEnabled?'Kamerayı kapat':'Kamerayı aç'} disabled={!voice.canSpeak} className={voice.cameraEnabled?'media-on':''} onClick={()=>void voice.toggleCamera()}>{voice.cameraEnabled?<CameraOff size={17}/>:<Camera size={17}/>}</button><button aria-label={voice.screenSharing?'Ekran paylaşımını durdur':'Ekran paylaş'} disabled={!voice.canSpeak} className={voice.screenSharing?'media-on':''} onClick={()=>void voice.toggleScreenShare()}>{voice.screenSharing?<ScreenShareOff size={17}/>:<MonitorUp size={17}/>}</button><button aria-label="Ses bağlantısını kes" onClick={()=>void voice.leave()}><PhoneOff size={17}/></button></div>
+    </div>
+    <div className="voice-dock-members" aria-label="Ses kanalındaki kullanıcılar">{voice.participants.map(person=>{
+      const localMuted=voice.locallyMutedParticipants.includes(person.identity);
+      return <div className={`voice-dock-member ${person.speaking&&!localMuted?'speaking':''} ${person.screen?'streaming':''}`} key={person.identity}>
+        <div className="voice-dock-avatar">{person.name.slice(0,2).toUpperCase()}</div>
+        <div className="voice-dock-member-copy"><b>{person.name}{person.local?' · Sen':''}</b><small>{person.speaking&&!localMuted?'Konuşuyor':person.muted?'Mikrofon kapalı':'Ses kanalında'}</small></div>
+        <div className="voice-dock-member-state">{person.screen&&<span className="voice-live-badge compact"><Radio size={10}/> LIVE</span>}{localMuted?<VolumeX size={14}/>:person.muted?<MicOff size={14}/>:<Mic size={14}/>}</div>
+      </div>;
+    })}</div>
+  </div>;
 }
