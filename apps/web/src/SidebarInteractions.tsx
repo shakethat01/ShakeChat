@@ -51,6 +51,16 @@ function groupNameForLabel(server:Server,label:string){
   return server.channels.find(channel=>normalizedGroup(channel)===label && channel.groupName?.trim())?.groupName?.trim() || prettifyGroupLabel(label);
 }
 
+function dropGroupName(server:Server,label:string,source:Channel){
+  const ownDefault=source.type==='VOICE'?'SES ALANI':'SOHBET';
+  const hasExplicit=server.channels.some(channel=>normalizedGroup(channel)===label && !!channel.groupName?.trim());
+  return label===ownDefault&&!hasExplicit ? '' : groupNameForLabel(server,label);
+}
+
+function groupLabelFromSection(section:HTMLElement){
+  return section.textContent?.trim().toLocaleUpperCase('tr-TR')||'';
+}
+
 function resolveChannelFromButton(button:HTMLButtonElement, server?:Server){
   if(!server)return undefined;
   const name=button.querySelector('.flow-name')?.textContent?.trim() || '';
@@ -95,11 +105,26 @@ export function SidebarInteractions(){
   function applyGroupState(server?:Server){
     if(!server)return;
     document.querySelectorAll<HTMLElement>('.flow-group').forEach(group=>{
-      const label=group.querySelector<HTMLElement>(':scope > .section')?.textContent?.trim().toLocaleUpperCase('tr-TR');
-      if(!label)return;
+      const section=group.querySelector<HTMLElement>(':scope > .section');
+      const label=section?groupLabelFromSection(section):'';
+      if(!section||!label)return;
+      const collapsed=isGroupCollapsed(server.id,label);
+      const hasUnread=!!group.querySelector(':scope > button.channel .unread-badge');
       group.classList.add('sidebar-collapsible');
-      group.classList.toggle('sidebar-collapsed',isGroupCollapsed(server.id,label));
+      group.classList.toggle('sidebar-collapsed',collapsed);
+      group.classList.toggle('sidebar-group-unread',hasUnread);
+      section.setAttribute('role','button');
+      section.tabIndex=0;
+      section.setAttribute('aria-expanded',String(!collapsed));
+      section.title=collapsed?'Kategoriyi aç':'Kategoriyi daralt';
     });
+  }
+
+  function markFirstUnread(){
+    document.querySelectorAll('.channel.sidebar-first-unread').forEach(node=>node.classList.remove('sidebar-first-unread'));
+    const first=[...document.querySelectorAll<HTMLButtonElement>('.flow-group button.channel')]
+      .find(button=>!!button.querySelector('.unread-badge')&&!button.closest('.flow-group')?.classList.contains('sidebar-collapsed'));
+    first?.classList.add('sidebar-first-unread');
   }
 
   function setGroupCollapsed(server:Server,label:string,collapsed:boolean){
@@ -107,6 +132,7 @@ export function SidebarInteractions(){
     if(collapsed)collapsedRef.current[key]=true; else delete collapsedRef.current[key];
     try{localStorage.setItem(COLLAPSED_KEY,JSON.stringify(collapsedRef.current))}catch{/* Local storage may be unavailable. */}
     applyGroupState(server);
+    markFirstUnread();
   }
 
   async function refreshServers(){
@@ -120,6 +146,7 @@ export function SidebarInteractions(){
         const result=await api.myPermissions(current.id).catch(()=>({permissions:[] as Permission[]}));
         manageServerRef.current=hasPermission(result.permissions,'MANAGE_CHANNELS')?current.id:'';
         applyGroupState(current);
+        markFirstUnread();
       }
     }catch{/* Main app owns auth/error state. */}
   }
@@ -140,15 +167,28 @@ export function SidebarInteractions(){
       const section=target?.closest<HTMLElement>('.flow-group > .section');
       if(!section || event.button!==0)return;
       const server=activeServer(serversRef.current);
-      const label=section.textContent?.trim().toLocaleUpperCase('tr-TR');
+      const label=groupLabelFromSection(section);
       if(!server||!label)return;
+      setGroupCollapsed(server,label,!isGroupCollapsed(server.id,label));
+    };
+    const key=(event:KeyboardEvent)=>{
+      if(event.key!=='Enter'&&event.key!==' ')return;
+      const target=event.target instanceof Element?event.target:null;
+      const section=target?.closest<HTMLElement>('.flow-group > .section');
+      if(!section)return;
+      const server=activeServer(serversRef.current);
+      const label=groupLabelFromSection(section);
+      if(!server||!label)return;
+      event.preventDefault();
       setGroupCollapsed(server,label,!isGroupCollapsed(server.id,label));
     };
     window.addEventListener('focus',focus);
     document.addEventListener('click',click,true);
+    document.addEventListener('keydown',key,true);
     return()=>{
       window.removeEventListener('focus',focus);
       document.removeEventListener('click',click,true);
+      document.removeEventListener('keydown',key,true);
       if(noticeTimer.current)window.clearTimeout(noticeTimer.current);
     };
   },[]);
@@ -162,6 +202,7 @@ export function SidebarInteractions(){
         button.classList.toggle('channel-draggable',canManage);
       });
       applyGroupState(current);
+      markFirstUnread();
     };
     decorateSidebar();
     const root=document.querySelector('.channel-list')||document.body;
@@ -196,7 +237,7 @@ export function SidebarInteractions(){
       const server=activeServer(list);
       if(!server)return;
       if(groupSection){
-        const groupLabel=groupSection.textContent?.trim().toLocaleUpperCase('tr-TR')||'';
+        const groupLabel=groupLabelFromSection(groupSection);
         if(!groupLabel)return;
         const channels=server.channels.filter(channel=>normalizedGroup(channel)===groupLabel);
         const permissions=(await api.myPermissions(server.id).catch(()=>({permissions:[] as Permission[]}))).permissions;
@@ -227,7 +268,10 @@ export function SidebarInteractions(){
   },[]);
 
   useEffect(()=>{
-    const clearTargets=()=>document.querySelectorAll('.channel-drop-target').forEach(node=>node.classList.remove('channel-drop-target'));
+    const clearTargets=()=>{
+      document.querySelectorAll('.channel-drop-target').forEach(node=>node.classList.remove('channel-drop-target'));
+      document.querySelectorAll('.group-drop-target').forEach(node=>node.classList.remove('group-drop-target'));
+    };
     const onDragStart=(event:DragEvent)=>{
       const button=event.target instanceof Element?event.target.closest<HTMLButtonElement>('.flow-group button.channel'):null;
       if(!button||!button.draggable)return;
@@ -240,26 +284,42 @@ export function SidebarInteractions(){
       if(event.dataTransfer)event.dataTransfer.effectAllowed='move';
     };
     const onDragOver=(event:DragEvent)=>{
-      const target=event.target instanceof Element?event.target.closest<HTMLButtonElement>('.flow-group button.channel'):null;
-      if(!target||!dragRef.current)return;
+      if(!dragRef.current)return;
+      const element=event.target instanceof Element?event.target:null;
+      const target=element?.closest<HTMLButtonElement>('.flow-group button.channel');
+      const groupSection=element?.closest<HTMLElement>('.flow-group > .section');
+      if(!target&&!groupSection)return;
       event.preventDefault();
       clearTargets();
-      target.classList.add('channel-drop-target');
+      if(target)target.classList.add('channel-drop-target');
+      else groupSection?.classList.add('group-drop-target');
       if(event.dataTransfer)event.dataTransfer.dropEffect='move';
     };
     const onDrop=async(event:DragEvent)=>{
-      const targetButton=event.target instanceof Element?event.target.closest<HTMLButtonElement>('.flow-group button.channel'):null;
+      const element=event.target instanceof Element?event.target:null;
+      const targetButton=element?.closest<HTMLButtonElement>('.flow-group button.channel')||null;
+      const groupSection=element?.closest<HTMLElement>('.flow-group > .section')||null;
       const drag=dragRef.current;
       dragRef.current=null;
       clearTargets();
       document.querySelectorAll('.channel-dragging').forEach(node=>node.classList.remove('channel-dragging'));
-      if(!targetButton||!drag)return;
+      if((!targetButton&&!groupSection)||!drag)return;
       event.preventDefault();
       const server=serversRef.current.find(item=>item.id===drag.serverId);
       const source=server?.channels.find(item=>item.id===drag.channelId);
-      const target=resolveChannelFromButton(targetButton,server);
-      if(!server||!source||!target||source.id===target.id)return;
+      if(!server||!source)return;
       try{
+        if(groupSection){
+          const label=groupLabelFromSection(groupSection);
+          if(!label)return;
+          const targetChannels=server.channels.filter(channel=>normalizedGroup(channel)===label && channel.id!==source.id);
+          const position=targetChannels.length?Math.max(...targetChannels.map(channel=>channel.position))+1:source.position;
+          await api.updateChannel(server.id,source.id,{position,groupName:dropGroupName(server,label,source)});
+          await refreshAndReload(`${source.name} → ${prettifyGroupLabel(label)} taşındı.`);
+          return;
+        }
+        const target=resolveChannelFromButton(targetButton!,server);
+        if(!target||source.id===target.id)return;
         const targetGroupName=target.groupName?.trim() || (source.type===target.type ? '' : prettifyGroupLabel(normalizedGroup(target)));
         await api.updateChannel(server.id,source.id,{position:target.position,groupName:targetGroupName});
         await refreshAndReload(`${source.name} taşındı.`);
