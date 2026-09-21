@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Hash, Home, MessageCircle, Search, Server as ServerIcon, Volume2, X } from 'lucide-react';
 import { api, auth } from './api';
 import type { DirectConversation, Server } from './api';
@@ -198,7 +199,7 @@ export function QuickSwitcher(){
     setOpen(false);
   }
 
-  function onKeyDown(event:React.KeyboardEvent<HTMLInputElement>){
+  function onKeyDown(event:ReactKeyboardEvent<HTMLInputElement>){
     if(event.key==='ArrowDown'){
       event.preventDefault();
       setSelected(value=>results.length?(value+1)%results.length:0);
