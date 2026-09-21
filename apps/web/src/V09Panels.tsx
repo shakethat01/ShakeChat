@@ -13,9 +13,9 @@ export function MessageText({ content, currentUsername }:{content:string;current
 }
 
 export function profileModeLabel(mode?:ProfileMode){
-  if(mode==='FOCUS')return 'Odak modu';
-  if(mode==='AWAY')return 'Uzakta';
-  return 'Uygun';
+  if(mode==='FOCUS')return 'Rahatsız etmeyin';
+  if(mode==='AWAY')return 'Boşta';
+  return 'Çevrimiçi';
 }
 
 export function ProfileModal({user,notificationsEnabled,onToggleNotifications,onClose,onSaved}:{
@@ -36,7 +36,7 @@ export function ProfileModal({user,notificationsEnabled,onToggleNotifications,on
       <div className="profile-preview"><div className="profile-preview-avatar">{avatarUrl?<img src={avatarUrl} alt=""/>:(displayName||user.username).slice(0,2).toUpperCase()}</div><div><b>{displayName||user.username}</b><span>@{user.username}</span><small>{statusText||profileModeLabel(profileMode)}</small></div></div>
       <div className="profile-fields">
         <label>GÖRÜNEN AD<input value={displayName} maxLength={48} onChange={e=>setDisplayName(e.target.value)} placeholder={user.username}/></label>
-        <label>DURUM<select value={profileMode} onChange={e=>setProfileMode(e.target.value as ProfileMode)}><option value="AVAILABLE">Uygun</option><option value="FOCUS">Odak modu</option><option value="AWAY">Uzakta</option></select></label>
+        <label>DURUM<select value={profileMode} onChange={e=>setProfileMode(e.target.value as ProfileMode)}><option value="AVAILABLE">Çevrimiçi</option><option value="AWAY">Boşta</option><option value="FOCUS">Rahatsız etmeyin</option></select></label>
         <label className="wide">KISA DURUM<input value={statusText} maxLength={96} onChange={e=>setStatusText(e.target.value)} placeholder="Örn. BDO'dayım, ses kanalındayım"/></label>
         <label className="wide">AVATAR BAĞLANTISI<input value={avatarUrl} maxLength={500} onChange={e=>setAvatarUrl(e.target.value)} placeholder="https://..."/></label>
       </div>
