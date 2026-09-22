@@ -1,7 +1,18 @@
-use livekit::{options::{AudioEncoding, TrackPublishOptions}, prelude::*};
+use futures_util::StreamExt;
+use livekit::{
+    options::{AudioEncoding, TrackPublishOptions},
+    prelude::*,
+    webrtc::audio_stream::native::NativeAudioStream,
+};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, sync::Arc};
-use tauri::State;
+use std::{
+    collections::HashSet,
+    sync::{
+        atomic::{AtomicBool, AtomicI32, Ordering},
+        Arc,
+    },
+};
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -42,19 +53,30 @@ pub struct NativeVoiceSnapshot {
     pub input_device_id: String, pub output_device_id: String, pub engine: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeMicLevelEvent { speaking: bool, level_db: f32 }
+
 struct Inner {
     room: Option<Room>, audio: Option<PlatformAudio>, mic_track: Option<LocalAudioTrack>,
     room_events: Option<tauri::async_runtime::JoinHandle<()>>,
+    mic_meter: Option<tauri::async_runtime::JoinHandle<()>>,
     active_speakers: Arc<parking_lot::RwLock<HashSet<String>>>,
+    meter_threshold: Arc<AtomicI32>, mic_muted: Arc<AtomicBool>,
     channel_id: String, can_speak: bool, muted: bool, deafened: bool,
     input_device_id: String, output_device_id: String, processing: NativeAudioProcessing,
 }
 
 impl Default for Inner {
     fn default() -> Self {
-        Self { room: None, audio: None, mic_track: None, room_events: None, active_speakers: Arc::new(parking_lot::RwLock::new(HashSet::new())), channel_id: String::new(),
+        Self {
+            room: None, audio: None, mic_track: None, room_events: None, mic_meter: None,
+            active_speakers: Arc::new(parking_lot::RwLock::new(HashSet::new())),
+            meter_threshold: Arc::new(AtomicI32::new(default_noise_gate_threshold())),
+            mic_muted: Arc::new(AtomicBool::new(true)), channel_id: String::new(),
             can_speak: false, muted: true, deafened: false, input_device_id: String::new(),
-            output_device_id: String::new(), processing: NativeAudioProcessing::default() }
+            output_device_id: String::new(), processing: NativeAudioProcessing::default(),
+        }
     }
 }
 
@@ -64,11 +86,9 @@ pub struct NativeVoiceState { inner: Mutex<Inner> }
 fn map_error(context: &str, error: impl std::fmt::Display) -> String { format!("{context}: {error}") }
 
 fn configure_processing(audio: &PlatformAudio, processing: NativeAudioProcessing) -> Result<(), String> {
-    // PlatformAudio/libwebrtc owns the realtime AEC/NS/AGC path. Keep the gate
-    // preference in native state as part of the desktop processing contract;
-    // frame-level gating is applied when capture moves to the explicit native
-    // audio-frame pipeline rather than pretending this ADM API exposes a gate.
-    let _gate = (processing.noise_gate_enabled, processing.noise_gate_threshold.clamp(-70, -25));
+    // PlatformAudio/libwebrtc owns the realtime AEC/NS/AGC path. The gate threshold
+    // is also used by the local realtime activity meter so the UI follows the same
+    // sensitivity setting instead of waiting for server-side active-speaker VAD.
     audio.configure_audio_processing(AudioProcessingOptions {
         echo_cancellation: processing.echo_cancellation,
         noise_suppression: processing.noise_suppression,
@@ -86,15 +106,26 @@ fn set_remote_audio_enabled(room: &Room, enabled: bool) {
     }
 }
 
+fn frame_db(samples: &[i16]) -> f32 {
+    if samples.is_empty() { return -90.0; }
+    let mean_square = samples.iter().map(|sample| {
+        let value = *sample as f64 / i16::MAX as f64;
+        value * value
+    }).sum::<f64>() / samples.len() as f64;
+    if mean_square <= 1.0e-12 { -90.0 } else { (20.0 * mean_square.sqrt().log10()) as f32 }
+}
+
 async fn close_previous(inner: &mut Inner) -> Option<Room> {
     if let Some(task) = inner.room_events.take() { task.abort(); }
+    if let Some(task) = inner.mic_meter.take() { task.abort(); }
     inner.active_speakers.write().clear();
+    inner.mic_muted.store(true, Ordering::Relaxed);
     inner.mic_track = None; inner.audio = None; inner.channel_id.clear(); inner.can_speak = false;
     inner.deafened = false; inner.room.take()
 }
 
 #[tauri::command]
-pub async fn native_voice_join(state: State<'_, NativeVoiceState>, url: String, token: String,
+pub async fn native_voice_join(app: AppHandle, state: State<'_, NativeVoiceState>, url: String, token: String,
     channel_id: String, can_speak: bool, processing: Option<NativeAudioProcessing>, start_muted: Option<bool>) -> Result<(), String> {
     let old_room = { let mut inner = state.inner.lock().await; close_previous(&mut inner).await };
     if let Some(room) = old_room { let _ = room.close().await; }
@@ -107,12 +138,24 @@ pub async fn native_voice_join(state: State<'_, NativeVoiceState>, url: String, 
         .map_err(|error| map_error("LiveKit ses odasına bağlanılamadı", error))?;
     let active_speakers = Arc::new(parking_lot::RwLock::new(HashSet::new()));
     let active_speakers_events = active_speakers.clone();
+    let event_app = app.clone();
     let event_task = tauri::async_runtime::spawn(async move {
         while let Some(event) = events.recv().await {
-            if let RoomEvent::ActiveSpeakersChanged { speakers } = event {
-                let mut active = active_speakers_events.write();
-                active.clear();
-                active.extend(speakers.into_iter().map(|participant| participant.identity().to_string()));
+            match event {
+                RoomEvent::ActiveSpeakersChanged { speakers } => {
+                    let identities = speakers.into_iter().map(|participant| participant.identity().to_string()).collect::<Vec<_>>();
+                    {
+                        let mut active = active_speakers_events.write();
+                        active.clear();
+                        active.extend(identities.iter().cloned());
+                    }
+                    let _ = event_app.emit("shakechat:voice-speakers", identities);
+                }
+                _ => {
+                    // Participant/track/connection changes should refresh React immediately;
+                    // the 1s timer in the frontend is only a recovery fallback now.
+                    let _ = event_app.emit("shakechat:voice-dirty", true);
+                }
             }
         }
     });
@@ -126,8 +169,46 @@ pub async fn native_voice_join(state: State<'_, NativeVoiceState>, url: String, 
             .map_err(|error| map_error("Yerel mikrofon yayınlanamadı", error))?;
         Some(track)
     } else { None };
+
+    let meter_threshold = Arc::new(AtomicI32::new(processing.noise_gate_threshold.clamp(-70, -25)));
+    let mic_muted = Arc::new(AtomicBool::new(start_muted || !can_speak));
+    let mic_meter = mic_track.as_ref().map(|track| {
+        let mut stream = NativeAudioStream::new(track.rtc_track(), 48_000, 1);
+        let meter_app = app.clone();
+        let threshold = meter_threshold.clone();
+        let muted = mic_muted.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut speaking = false;
+            let mut quiet_frames: u8 = 0;
+            while let Some(frame) = stream.next().await {
+                let level_db = frame_db(frame.data.as_ref());
+                let above = !muted.load(Ordering::Relaxed) && level_db >= threshold.load(Ordering::Relaxed) as f32;
+                if above {
+                    quiet_frames = 0;
+                    if !speaking {
+                        speaking = true;
+                        let _ = meter_app.emit("shakechat:voice-mic-level", NativeMicLevelEvent { speaking: true, level_db });
+                    }
+                } else if speaking {
+                    quiet_frames = quiet_frames.saturating_add(1);
+                    // NativeAudioStream delivers ~10ms frames. A short release hold avoids
+                    // flicker while still switching off much faster than server VAD.
+                    if quiet_frames >= 8 {
+                        speaking = false;
+                        quiet_frames = 0;
+                        let _ = meter_app.emit("shakechat:voice-mic-level", NativeMicLevelEvent { speaking: false, level_db });
+                    }
+                }
+            }
+            if speaking {
+                let _ = meter_app.emit("shakechat:voice-mic-level", NativeMicLevelEvent { speaking: false, level_db: -90.0 });
+            }
+        })
+    });
+
     let mut inner = state.inner.lock().await;
-    inner.room = Some(room); inner.audio = Some(audio); inner.mic_track = mic_track; inner.room_events = Some(event_task); inner.active_speakers = active_speakers;
+    inner.room = Some(room); inner.audio = Some(audio); inner.mic_track = mic_track; inner.room_events = Some(event_task); inner.mic_meter = mic_meter;
+    inner.active_speakers = active_speakers; inner.meter_threshold = meter_threshold; inner.mic_muted = mic_muted;
     inner.channel_id = channel_id; inner.can_speak = can_speak; inner.muted = start_muted || !can_speak;
     inner.deafened = false; inner.input_device_id = input_device_id; inner.output_device_id = output_device_id;
     inner.processing = processing; Ok(())
@@ -143,8 +224,9 @@ pub async fn native_voice_leave(state: State<'_, NativeVoiceState>) -> Result<()
 pub async fn native_voice_set_muted(state: State<'_, NativeVoiceState>, muted: bool) -> Result<(), String> {
     let mut inner = state.inner.lock().await;
     if !inner.can_speak && !muted { return Err("Bu ses kanalında konuşma yetkin yok.".into()); }
-    let Some(track) = inner.mic_track.as_ref() else { inner.muted = true; return if muted { Ok(()) } else { Err("Yerel mikrofon hazır değil.".into()) }; };
-    if muted { track.mute(); } else { track.unmute(); } inner.muted = muted; Ok(())
+    let Some(track) = inner.mic_track.as_ref() else { inner.muted = true; inner.mic_muted.store(true, Ordering::Relaxed); return if muted { Ok(()) } else { Err("Yerel mikrofon hazır değil.".into()) }; };
+    if muted { track.mute(); } else { track.unmute(); }
+    inner.muted = muted; inner.mic_muted.store(muted, Ordering::Relaxed); Ok(())
 }
 
 #[tauri::command]
@@ -156,6 +238,7 @@ pub async fn native_voice_set_deafened(state: State<'_, NativeVoiceState>, deafe
 #[tauri::command]
 pub async fn native_voice_set_processing(state: State<'_, NativeVoiceState>, processing: NativeAudioProcessing) -> Result<(), String> {
     let mut inner = state.inner.lock().await; if let Some(audio) = inner.audio.as_ref() { configure_processing(audio, processing)?; }
+    inner.meter_threshold.store(processing.noise_gate_threshold.clamp(-70, -25), Ordering::Relaxed);
     inner.processing = processing; Ok(())
 }
 
@@ -191,8 +274,9 @@ pub async fn native_voice_snapshot(state: State<'_, NativeVoiceState>) -> Result
             input_device_id: inner.input_device_id.clone(), output_device_id: inner.output_device_id.clone(), engine: "native-webrtc-apm".into() }); };
     let active_speakers = inner.active_speakers.read().clone();
     let mut participants = Vec::new(); let local = room.local_participant(); let local_name = local.name(); let local_identity = local.identity().to_string();
+    let local_muted = inner.mic_track.as_ref().map(LocalAudioTrack::is_muted).unwrap_or(true);
     participants.push(NativeVoiceParticipant { identity: local_identity.clone(), name: if local_name.trim().is_empty() { local_identity.clone() } else { local_name },
-        local: true, speaking: active_speakers.contains(&local_identity) || local.is_speaking(), muted: inner.mic_track.as_ref().map(LocalAudioTrack::is_muted).unwrap_or(true), camera: false, screen: false });
+        local: true, speaking: !local_muted && (active_speakers.contains(&local_identity) || local.is_speaking()), muted: local_muted, camera: false, screen: false });
     for participant in room.remote_participants().values() {
         let publications = participant.track_publications(); let mic = publications.values().find(|p| p.source() == TrackSource::Microphone);
         let camera = publications.values().any(|p| p.source() == TrackSource::Camera && !p.is_muted());
@@ -207,6 +291,6 @@ pub async fn native_voice_snapshot(state: State<'_, NativeVoiceState>) -> Result
     } else { (Vec::new(), Vec::new()) };
     let status = match room.connection_state() { ConnectionState::Connected => "connected", ConnectionState::Reconnecting => "reconnecting", ConnectionState::Disconnected => "disconnected" };
     Ok(NativeVoiceSnapshot { status: status.into(), channel_id: inner.channel_id.clone(), participants,
-        muted: inner.mic_track.as_ref().map(LocalAudioTrack::is_muted).unwrap_or(true), deafened: inner.deafened, can_speak: inner.can_speak,
+        muted: local_muted, deafened: inner.deafened, can_speak: inner.can_speak,
         input_devices, output_devices, input_device_id: inner.input_device_id.clone(), output_device_id: inner.output_device_id.clone(), engine: "native-webrtc-apm".into() })
 }
