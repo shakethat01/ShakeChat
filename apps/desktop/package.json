@@ -3,11 +3,12 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "dev": "tauri dev",
-    "build": "tauri build",
+    "dev": "cross-env VITE_API_ORIGIN=https://shakechat.duckdns.org tauri dev",
+    "build": "cross-env VITE_API_ORIGIN=https://shakechat.duckdns.org tauri build",
     "check": "cargo check --manifest-path src-tauri/Cargo.toml"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.8.4"
+    "@tauri-apps/cli": "^2.8.4",
+    "cross-env": "^7.0.3"
   }
 }
