@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/desktop-windows.yml'
       - 'apps/desktop/**'
+      - 'apps/web/src/App.tsx'
       - 'apps/web/src/useNativeVoice.ts'
       - 'apps/web/src/api.ts'
       - 'apps/web/src/socket.ts'
