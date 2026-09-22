@@ -7,6 +7,9 @@ on:
       - '.github/workflows/desktop-windows.yml'
       - 'apps/desktop/**'
       - 'apps/web/src/useNativeVoice.ts'
+      - 'apps/web/src/api.ts'
+      - 'apps/web/src/socket.ts'
+      - 'apps/web/vite.config.ts'
       - 'apps/web/src/useVoiceRuntime.ts'
       - 'apps/web/package.json'
       - 'apps/api/src/main.ts'
@@ -54,6 +57,8 @@ jobs:
         run: npm run desktop:check
 
       - name: Build ShakeChat desktop executable
+        env:
+          VITE_API_ORIGIN: https://chat.shakethat.com.tr
         run: npm run desktop:build
 
       - name: Upload desktop alpha executable
