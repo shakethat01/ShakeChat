@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import type { AppPreferences } from './preferences';
@@ -6,6 +7,7 @@ import { pushToTalkKeyLabel } from './preferences';
 import type { VoiceParticipant, VoiceVideoTrack } from './useVoice';
 
 type NativeDevice = { deviceId:string; label:string };
+type NativeMicLevelEvent = { speaking:boolean; levelDb:number };
 type NativeSnapshot = {
   status:'disconnected'|'connecting'|'connected'|'reconnecting';
   channelId:string;
@@ -139,15 +141,41 @@ export function useNativeVoice(enabled:boolean,onError:(message:string)=>void,pr
     else if(next>0&&locallyMutedParticipants.includes(identity))toggleParticipantLocalMute(identity);
   },[locallyMutedParticipants,toggleParticipantLocalMute]);
 
-  const unsupportedMedia=useCallback(async()=>{onError('Desktop native ses motoru aktif. Kamera/ekran paylaşımı bir sonraki desktop adımında native hatta taşınacak.')},[onError]);
+  const unsupportedMedia=useCallback(async()=>{onError('Medya modu hazırlanıyor. Kamera/ekran paylaşımı web medya motoruna devredilmeli.')},[onError]);
   const switchCamera=useCallback(async(_deviceId:string)=>{await unsupportedMedia()},[unsupportedMedia]);
 
   useEffect(()=>{
     if(!enabled||!isTauriRuntime())return;
-    // Native LiveKit already tracks active-speaker events; keep the React snapshot close to that event stream.
-    const timer=window.setInterval(()=>{void refreshSnapshot()},75);
+    let disposed=false;
+    const unlisten:Array<()=>void>=[];
+    const register=async()=>{
+      const speakers=await listen<string[]>('shakechat:voice-speakers',event=>{
+        if(disposed)return;
+        const active=new Set(event.payload||[]);
+        setSnapshot(previous=>({...previous,participants:previous.participants.map(participant=>
+          participant.local?participant:{...participant,speaking:active.has(participant.identity)}
+        )}));
+      });
+      if(disposed)speakers();else unlisten.push(speakers);
+
+      const mic=await listen<NativeMicLevelEvent>('shakechat:voice-mic-level',event=>{
+        if(disposed)return;
+        setSnapshot(previous=>({...previous,participants:previous.participants.map(participant=>
+          participant.local?{...participant,speaking:!previous.muted&&Boolean(event.payload?.speaking)}:participant
+        )}));
+      });
+      if(disposed)mic();else unlisten.push(mic);
+
+      const dirty=await listen<boolean>('shakechat:voice-dirty',()=>{
+        if(!disposed)void refreshSnapshot();
+      });
+      if(disposed)dirty();else unlisten.push(dirty);
+    };
+    void register();
     void refreshSnapshot();
-    return()=>window.clearInterval(timer);
+    // Recovery only. Realtime speaking/track changes arrive through Tauri events.
+    const timer=window.setInterval(()=>{void refreshSnapshot()},1000);
+    return()=>{disposed=true;window.clearInterval(timer);for(const stop of unlisten)stop()};
   },[enabled,refreshSnapshot]);
 
   useEffect(()=>{
