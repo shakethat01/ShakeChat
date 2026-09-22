@@ -26,11 +26,13 @@ if (-not (Test-Path $KeyPath)) {
 if (-not (Test-Path $PublicKeyPath)) { throw "Public key bulunamadi: $PublicKeyPath" }
 $PublicKey = (Get-Content -Raw $PublicKeyPath).Trim()
 if ([string]::IsNullOrWhiteSpace($PublicKey)) { throw 'Public key bos.' }
+$PrivateKey = Get-Content -Raw $KeyPath
+if ([string]::IsNullOrWhiteSpace($PrivateKey)) { throw 'Private key bos.' }
 
 $env:SHAKECHAT_UPDATER_PUBLIC_KEY = $PublicKey
 $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $KeyPath
+$env:TAURI_SIGNING_PRIVATE_KEY = $PrivateKey
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
-Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
 
 & (Join-Path $PSScriptRoot 'inject-updater-public-key.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Updater public key Tauri config icine yazilamadi.' }

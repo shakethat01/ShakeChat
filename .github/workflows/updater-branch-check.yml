@@ -61,7 +61,13 @@ jobs:
         run: ./tools/inject-updater-public-key.ps1
 
       - name: Build signed NSIS updater smoke bundle
-        run: npm run desktop:build
+        shell: pwsh
+        run: |
+          if (-not (Test-Path $env:TAURI_SIGNING_PRIVATE_KEY_PATH)) { throw 'Updater private key file is missing.' }
+          $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw $env:TAURI_SIGNING_PRIVATE_KEY_PATH
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) { throw 'Updater private key content is empty.' }
+          npm run desktop:build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify installer and updater signature
         shell: pwsh
