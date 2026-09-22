@@ -91,7 +91,10 @@ function InviteJoinModal({code,onClose,onJoined}:{code:string;onClose:()=>void;o
   </dialog>;
 }
 
-function inviteUrl(code:string){return `${window.location.origin}/invite/${code}`}
+function inviteUrl(code:string){
+  const origin=window.location.hostname==='tauri.localhost'?'https://chat.shakethat.com.tr':window.location.origin;
+  return `${origin}/invite/${code}`;
+}
 function hasMention(content:string,username?:string){if(!username)return false;const escaped=username.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');return new RegExp(`(^|\\s)@${escaped}(?=$|\\s|[.,!?;:])`,'i').test(content)}
 function directConversationLabel(conversation?:DirectConversation){if(!conversation)return 'Özel mesaj';if(!conversation.isGroup&&conversation.other)return conversation.other.displayName||conversation.other.username;if(conversation.title?.trim())return conversation.title.trim();return conversation.members.slice(0,3).map(user=>user.displayName||user.username).join(', ')||'Grup sohbeti'}
 
