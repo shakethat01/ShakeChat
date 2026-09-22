@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const file=path.join(process.cwd(),'apps/web/src/App.tsx');
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const file=path.join(root,'apps/web/src/App.tsx');
 if(!fs.existsSync(file))throw new Error('App.tsx bulunamadi: '+file);
 let source=fs.readFileSync(file,'utf8');
 const oldImport="import { useVoice } from './useVoice';";
