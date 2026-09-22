@@ -46,7 +46,7 @@ on_error() {
 }
 trap 'on_error $LINENO' ERR
 
-echo "=== ShakeChat Audio Stability v3.0 ==="
+echo "=== ShakeChat Audio Stability v3.1 ==="
 echo "Backup: $BACKUP"
 echo
 
@@ -58,8 +58,8 @@ echo "[2/8] Duplicate runtime tuning hotfix..."
 node tools/apply-audio-stability-v3.0-hotfix.mjs
 
 echo
-echo "[3/8] LiveKit processor restart AudioContext hotfix..."
-node tools/apply-audio-stability-v3.0-livekit-restart-hotfix.mjs
+echo "[3/8] Worklet reuse v3.1..."
+node tools/apply-audio-worklet-reuse-v3.1.mjs
 
 echo
 echo "[4/8] Statik verify..."
@@ -84,7 +84,7 @@ LIVEKIT_PUBLIC_URL=ws://localhost:7880 npm test
 trap - ERR
 
 echo
-echo "=== AUDIO STABILITY v3.0 OTOMATIK KONTROLLER TEMIZ ==="
+echo "=== AUDIO STABILITY v3.1 OTOMATIK KONTROLLER TEMIZ ==="
 echo "Backup saklandi: $BACKUP"
 echo "Degisiklikler commit edilmedi; once iki kisilik gercek ses testi yap."
 echo
@@ -94,3 +94,4 @@ echo "  2) Dengeli: konusurken hizli klavye"
 echo "  3) Guclu: ayni iki test"
 echo "  4) 15-30 dk kesintisiz konusma"
 echo "  5) ekran paylasimi ac/kapat sonrasi mic kontrolu"
+echo "  6) mikrofon cihazini 2-3 kez degistirip tekrar konus"
