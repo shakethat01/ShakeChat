@@ -191,14 +191,14 @@ pub async fn native_voice_snapshot(state: State<'_, NativeVoiceState>) -> Result
             input_device_id: inner.input_device_id.clone(), output_device_id: inner.output_device_id.clone(), engine: "native-webrtc-apm".into() }); };
     let active_speakers = inner.active_speakers.read().clone();
     let mut participants = Vec::new(); let local = room.local_participant(); let local_name = local.name(); let local_identity = local.identity().to_string();
-    participants.push(NativeVoiceParticipant { identity: local_identity.clone(), name: if local_name.trim().is_empty() { local_identity } else { local_name },
+    participants.push(NativeVoiceParticipant { identity: local_identity.clone(), name: if local_name.trim().is_empty() { local_identity.clone() } else { local_name },
         local: true, speaking: active_speakers.contains(&local_identity) || local.is_speaking(), muted: inner.mic_track.as_ref().map(LocalAudioTrack::is_muted).unwrap_or(true), camera: false, screen: false });
     for participant in room.remote_participants().values() {
         let publications = participant.track_publications(); let mic = publications.values().find(|p| p.source() == TrackSource::Microphone);
         let camera = publications.values().any(|p| p.source() == TrackSource::Camera && !p.is_muted());
         let screen = publications.values().any(|p| p.source() == TrackSource::Screenshare && !p.is_muted());
         let identity = participant.identity().to_string(); let name = participant.name();
-        participants.push(NativeVoiceParticipant { identity: identity.clone(), name: if name.trim().is_empty() { identity } else { name }, local: false,
+        participants.push(NativeVoiceParticipant { identity: identity.clone(), name: if name.trim().is_empty() { identity.clone() } else { name }, local: false,
             speaking: active_speakers.contains(&identity) || participant.is_speaking(), muted: mic.map(|p| p.is_muted()).unwrap_or(true), camera, screen });
     }
     let (input_devices, output_devices) = if let Some(audio) = inner.audio.as_ref() {
