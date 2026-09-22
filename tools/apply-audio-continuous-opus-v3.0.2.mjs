@@ -2,11 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const file = path.join(process.cwd(), 'apps/web/src/useVoice.ts');
-if (!fs.existsSync(file)) throw new Error(`Dosya bulunamadi: ${file}`);
+const processorFile = path.join(process.cwd(), 'apps/web/src/noiseGate.ts');
+if (!fs.existsSync(file) || !fs.existsSync(processorFile)) throw new Error('Audio dosyalari bulunamadi.');
 let text = fs.readFileSync(file, 'utf8');
+const processor = fs.readFileSync(processorFile, 'utf8');
 
-if (!text.includes("readonly name = 'shakechat-stable-ai-gate-v3'") && !fs.readFileSync(path.join(process.cwd(), 'apps/web/src/noiseGate.ts'), 'utf8').includes("readonly name = 'shakechat-stable-ai-gate-v3'")) {
-  throw new Error('Audio Stability v3.0 once uygulanmali.');
+if (!processor.includes("readonly name = 'shakechat-stable-ai-gate-v3.1'") && !processor.includes("readonly name = 'shakechat-stable-ai-gate-v3'")) {
+  throw new Error('Audio Stability v3.x once uygulanmali.');
 }
 
 if (text.includes('  dtx: true,')) {
