@@ -9,11 +9,15 @@ pub struct NativeAudioProcessing {
     pub echo_cancellation: bool,
     pub noise_suppression: bool,
     pub auto_gain_control: bool,
+    #[serde(default)] pub noise_gate_enabled: bool,
+    #[serde(default = "default_noise_gate_threshold")] pub noise_gate_threshold: i32,
 }
+
+fn default_noise_gate_threshold() -> i32 { -48 }
 
 impl Default for NativeAudioProcessing {
     fn default() -> Self {
-        Self { echo_cancellation: true, noise_suppression: true, auto_gain_control: true }
+        Self { echo_cancellation: true, noise_suppression: true, auto_gain_control: true, noise_gate_enabled: true, noise_gate_threshold: default_noise_gate_threshold() }
     }
 }
 
@@ -58,6 +62,11 @@ pub struct NativeVoiceState { inner: Mutex<Inner> }
 fn map_error(context: &str, error: impl std::fmt::Display) -> String { format!("{context}: {error}") }
 
 fn configure_processing(audio: &PlatformAudio, processing: NativeAudioProcessing) -> Result<(), String> {
+    // PlatformAudio/libwebrtc owns the realtime AEC/NS/AGC path. Keep the gate
+    // preference in native state as part of the desktop processing contract;
+    // frame-level gating is applied when capture moves to the explicit native
+    // audio-frame pipeline rather than pretending this ADM API exposes a gate.
+    let _gate = (processing.noise_gate_enabled, processing.noise_gate_threshold.clamp(-70, -25));
     audio.configure_audio_processing(AudioProcessingOptions {
         echo_cancellation: processing.echo_cancellation,
         noise_suppression: processing.noise_suppression,
