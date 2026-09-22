@@ -1,9 +1,18 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { AudioLines, Gauge, Keyboard, KeyRound, MonitorCog, Palette, ShieldCheck, SlidersHorizontal, UserCog, UsersRound, X } from 'lucide-react';
+import { AudioLines, DownloadCloud, Gauge, Keyboard, KeyRound, MonitorCog, Palette, ShieldCheck, SlidersHorizontal, UserCog, UsersRound, X } from 'lucide-react';
 import { api, PrivacySettings, User } from './api';
+import { DesktopUpdateState, checkDesktopUpdate, installDesktopUpdate } from './desktopUpdater';
 import { AppPreferences, cameraQualityLabel, pushToTalkKeyLabel, screenQualityLabel } from './preferences';
 
 type SettingsTab = 'account'|'appearance'|'media'|'privacy';
+
+function updateStatusLabel(state:DesktopUpdateState|null){
+  if(!state)return 'Henüz güncelleme denetlenmedi.';
+  if(state.status==='unsupported')return 'Güncelleme denetimi yalnızca kurulu ShakeChat masaüstü uygulamasında çalışır.';
+  if(state.status==='up-to-date')return 'ShakeChat güncel.';
+  if(state.status==='available')return `Yeni sürüm hazır: v${state.version} · mevcut v${state.currentVersion}`;
+  return state.progress===null?`v${state.version} indiriliyor…`:`v${state.version} indiriliyor… %${state.progress}`;
+}
 
 export function AppSettingsModal({user,preferences,onClose,onSave,onSessionRenewed,onNotice}:{
   user:User;
@@ -19,6 +28,8 @@ export function AppSettingsModal({user,preferences,onClose,onSave,onSessionRenew
   const [privacy,setPrivacy]=useState<PrivacySettings|null>(null);
   const [privacyBusy,setPrivacyBusy]=useState(false);
   const [accountBusy,setAccountBusy]=useState(false);
+  const [updateBusy,setUpdateBusy]=useState(false);
+  const [updateState,setUpdateState]=useState<DesktopUpdateState|null>(null);
   const [error,setError]=useState('');
   const [currentPassword,setCurrentPassword]=useState('');
   const [newPassword,setNewPassword]=useState('');
@@ -61,11 +72,39 @@ export function AppSettingsModal({user,preferences,onClose,onSave,onSessionRenew
     }catch(err){setError((err as Error).message)}finally{setAccountBusy(false)}
   }
 
+  async function checkForDesktopUpdate(){
+    if(updateBusy)return;
+    setUpdateBusy(true);setError('');
+    try{
+      const state=await checkDesktopUpdate();
+      setUpdateState(state);
+      if(state.status==='up-to-date')onNotice('ShakeChat güncel.');
+      if(state.status==='unsupported')onNotice('Güncelleme denetimi masaüstü uygulamasında kullanılabilir.');
+    }catch(err){
+      setError(`Güncelleme denetimi başarısız: ${(err as Error).message}`);
+    }finally{
+      setUpdateBusy(false);
+    }
+  }
+
+  async function installAvailableDesktopUpdate(){
+    if(updateBusy)return;
+    setUpdateBusy(true);setError('');
+    try{
+      onNotice('Güncelleme indiriliyor ve imzası doğrulanıyor…');
+      await installDesktopUpdate(setUpdateState);
+    }catch(err){
+      setError(`Güncelleme kurulamadı: ${(err as Error).message}`);
+    }finally{
+      setUpdateBusy(false);
+    }
+  }
+
   const title=tab==='account'?'Hesap ve oturum güvenliği':tab==='privacy'?'Gizlilik tercihleri':tab==='appearance'?'Görünüm ve kullanım':'Ses ve görüntü kalitesi';
   return <dialog ref={dialog} className="modal-backdrop v10-dialog" aria-labelledby="app-settings-title" onCancel={e=>{e.preventDefault();onClose()}}>
     <form className="app-settings-panel" onSubmit={handleSubmit}>
       <aside className="app-settings-nav">
-        <div className="settings-brand"><span>ST</span><div><b>ShakeChat</b><small>v1.4 ayarları</small></div></div>
+        <div className="settings-brand"><span>ST</span><div><b>ShakeChat</b><small>v1.9 ayarları</small></div></div>
         <button type="button" className={tab==='account'?'active':''} onClick={()=>{setTab('account');setError('')}}><UserCog size={17}/> Hesap</button>
         <button type="button" className={tab==='privacy'?'active':''} onClick={()=>{setTab('privacy');setError('')}}><ShieldCheck size={17}/> Gizlilik</button>
         <button type="button" className={tab==='appearance'?'active':''} onClick={()=>{setTab('appearance');setError('')}}><Palette size={17}/> Görünüm</button>
@@ -86,6 +125,7 @@ export function AppSettingsModal({user,preferences,onClose,onSave,onSessionRenew
             </div>
           </div>
           <div className="setting-block session-card"><div className="setting-title"><ShieldCheck size={18}/><div><b>Diğer oturumları kapat</b><small>Eski JWT sürümünü iptal eder. Diğer cihazlar bir sonraki istekte veya WebSocket işleminde yeniden giriş yapmak zorunda kalır.</small></div></div><button type="button" className="ghost security-action" disabled={accountBusy} onClick={()=>void rotateSessions()}>Diğer oturumları geçersiz kıl</button></div>
+          <div className="setting-block session-card"><div className="setting-title"><DownloadCloud size={18}/><div><b>ShakeChat güncellemesi</b><small>Yeni Windows sürümünü GitHub Releases üzerinden denetler, imzasını doğrular ve kurar.</small></div></div><div className="account-form"><div className="quality-note">{updateStatusLabel(updateState)}</div>{updateState?.status==='available'&&updateState.notes?<div className="quality-note">{updateState.notes}</div>:null}{updateState?.status==='available'?<button type="button" className="primary compact" disabled={updateBusy} onClick={()=>void installAvailableDesktopUpdate()}>{updateBusy?'İndiriliyor…':`v${updateState.version} indir ve kur`}</button>:<button type="button" className="ghost security-action" disabled={updateBusy||updateState?.status==='installing'} onClick={()=>void checkForDesktopUpdate()}>{updateBusy?'Denetleniyor…':'Güncellemeleri denetle'}</button>}</div></div>
         </div>:tab==='privacy'?<div className="settings-stack">
           {!privacy?<div className="message-skeleton">Gizlilik tercihleri yükleniyor…</div>:<>
             <div className="setting-block"><div className="setting-title"><UsersRound size={18}/><div><b>Arkadaşlık istekleri</b><small>Yeni arkadaşlık isteğini kimlerin başlatabileceğini seç.</small></div></div><label className="privacy-select">İSTEK KAYNAĞI<select value={privacy.friendRequestPolicy} onChange={e=>setPrivacy(p=>p?{...p,friendRequestPolicy:e.target.value as PrivacySettings['friendRequestPolicy']}:p)}><option value="EVERYONE">Herkes</option><option value="SHARED_SERVERS">Yalnızca ortak alan üyeleri</option><option value="NOBODY">Hiç kimse</option></select></label></div>
