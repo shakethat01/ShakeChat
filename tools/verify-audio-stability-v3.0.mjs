@@ -17,14 +17,18 @@ function check(name, ok, detail = '') {
 
 check('GTCRN/RNNoise dependency', Boolean(pkg.dependencies?.['@sapphi-red/web-noise-suppressor']));
 check('package-lock dependency', lock.includes('node_modules/@sapphi-red/web-noise-suppressor'));
-check('deterministic processor marker', noiseGate.includes("readonly name = 'shakechat-stable-ai-gate-v3'"));
+check('v3.1 processor marker', noiseGate.includes("readonly name = 'shakechat-stable-ai-gate-v3.1'"));
 check('GTCRN primary marker', noiseGate.includes("const PRIMARY_ENGINE: 'gtcrn' | 'rnnoise' = 'gtcrn'"));
 check('RNNoise fallback present', noiseGate.includes("['gtcrn', 'rnnoise']"));
 check('mono AI channels', noiseGate.includes('maxChannels: 1'));
+check('persistent input bus', noiseGate.includes('private inputBus?: GainNode;'));
+check('worklet reused on restart', noiseGate.includes('input track swapped; worklet/output reused'));
+check('suppressor created once per processor', noiseGate.includes('private suppressorAttempted = false;'));
+check('LiveKit restart reuses AudioContext', noiseGate.includes('const context = options.audioContext || this.context;'));
+check('worklet port closed on final destroy', noiseGate.includes('this.suppressor?.port.close()'));
 check('no experimental parallel aiGain', !noiseGate.includes('private aiGain'));
 check('no experimental parallel rawGain', !noiseGate.includes('private rawGain'));
 check('no experimental mix graph', !noiseGate.includes('private mix'));
-check('LiveKit restart reuses AudioContext', noiseGate.includes('const audioContext = options.audioContext || this.context;'));
 check('48 kHz mono capture', voice.includes('sampleRate: 48_000') && voice.includes('channelCount: 1'));
 check('browser NS forced off', voice.includes('noiseSuppression: false'));
 check('browser AGC forced off', voice.includes('autoGainControl: false'));
@@ -45,7 +49,7 @@ for (const item of checks) {
   if (!item.ok) failed += 1;
 }
 
-console.log(`\nAudio Stability v3 static verify: ${checks.length - failed}/${checks.length} OK`);
+console.log(`\nAudio Stability v3.1 static verify: ${checks.length - failed}/${checks.length} OK`);
 if (failed) {
   console.error(`${failed} kontrol basarisiz. Build/test calistirmadan once patch durumunu kontrol et.`);
   process.exit(1);
