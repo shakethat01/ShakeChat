@@ -1,0 +1,17 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
+const file=path.join(process.cwd(),'apps/web/src/App.tsx');
+if(!fs.existsSync(file))throw new Error('App.tsx bulunamadi: '+file);
+let source=fs.readFileSync(file,'utf8');
+const oldImport="import { useVoice } from './useVoice';";
+const newImport="import { useVoiceRuntime as useVoice } from './useVoiceRuntime';";
+if(source.includes(newImport)){
+  console.log('Desktop native voice runtime zaten bagli.');
+  process.exit(0);
+}
+const count=source.split(oldImport).length-1;
+if(count!==1)throw new Error(`useVoice import hedef sayisi ${count} (1 bekleniyordu)`);
+source=source.replace(oldImport,newImport);
+fs.writeFileSync(file,source);
+console.log('Desktop native voice runtime baglandi: browser=eski engine, Tauri=native Rust engine.');
