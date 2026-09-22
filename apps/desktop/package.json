@@ -7,6 +7,9 @@
     "build": "cross-env VITE_API_ORIGIN=https://shakechat.duckdns.org tauri build",
     "check": "cargo check --manifest-path src-tauri/Cargo.toml"
   },
+  "dependencies": {
+    "@tauri-apps/plugin-updater": "^2.10.1"
+  },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.4",
     "cross-env": "^7.0.3"

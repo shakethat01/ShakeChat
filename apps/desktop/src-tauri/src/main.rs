@@ -6,6 +6,7 @@ use native_voice::NativeVoiceState;
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(NativeVoiceState::default())
         .invoke_handler(tauri::generate_handler![
             native_voice::native_voice_join,
