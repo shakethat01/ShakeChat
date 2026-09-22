@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - fix/updater-clean-v1
+      - feature/voice-media-full-v1
   workflow_dispatch:
 
 concurrency:
