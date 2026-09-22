@@ -29,6 +29,7 @@ check('browser NS forced off', voice.includes('noiseSuppression: false'));
 check('browser AGC forced off', voice.includes('autoGainControl: false'));
 check('saved processing signature', voice.includes('const processingSignature = ['));
 check('single controlled restart', voice.includes('[voice:v3] saved profile applied after one controlled restart'));
+check('no legacy runtime tuning effect', !voice.includes('Runtime tuning is best effort.'));
 check('no live applyConstraints churn', !voice.includes('[voice] live microphone constraints applied'));
 check('three stable profiles', settings.includes("setVoiceProcessingProfile('off')") && settings.includes("setVoiceProcessingProfile('balanced')") && settings.includes("setVoiceProcessingProfile('strong')"));
 check('balanced gate preset', settings.includes('noiseGateThreshold:-60'));
