@@ -39,8 +39,13 @@ if ($LASTEXITCODE -ne 0) { throw 'Updater public key Tauri config icine yazilama
 
 $Gh = Get-Command gh -ErrorAction SilentlyContinue
 if ($Gh) {
+  $PreviousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'SilentlyContinue'
   gh auth status *> $null
-  if ($LASTEXITCODE -eq 0) {
+  $GhLoggedIn = ($LASTEXITCODE -eq 0)
+  $ErrorActionPreference = $PreviousErrorActionPreference
+
+  if ($GhLoggedIn) {
     Write-Host 'GitHub Actions updater anahtarlari ayarlaniyor...'
     Get-Content -Raw $KeyPath | gh secret set TAURI_SIGNING_PRIVATE_KEY --repo $Repo
     if ($LASTEXITCODE -ne 0) { throw 'GitHub private key secreti ayarlanamadi.' }
@@ -49,6 +54,7 @@ if ($Gh) {
     Write-Host 'GitHub secret + public variable tamam.' -ForegroundColor Green
   } else {
     Write-Host 'GitHub CLI var ama oturum acik degil. Local installer yine olusturulacak.' -ForegroundColor Yellow
+    Write-Host 'Gercek release icin daha sonra bir kez: gh auth login' -ForegroundColor Yellow
   }
 } else {
   Write-Host 'GitHub CLI bulunamadi. Local installer yine olusturulacak; GitHub secret ayari sonra yapilabilir.' -ForegroundColor Yellow
