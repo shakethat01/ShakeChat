@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "ShakeChat",
         "width": 1440,
         "height": 900,
@@ -26,11 +27,6 @@
     }
   },
   "bundle": {
-    "active": true,
-    "targets": "all",
-    "windows": {
-      "wix": null,
-      "nsis": null
-    }
+    "active": false
   }
 }
