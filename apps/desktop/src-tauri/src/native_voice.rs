@@ -1,5 +1,6 @@
 use livekit::{options::{AudioEncoding, TrackPublishOptions}, prelude::*};
 use serde::{Deserialize, Serialize};
+use std::{collections::HashSet, sync::Arc};
 use tauri::State;
 use tokio::sync::Mutex;
 
@@ -44,13 +45,14 @@ pub struct NativeVoiceSnapshot {
 struct Inner {
     room: Option<Room>, audio: Option<PlatformAudio>, mic_track: Option<LocalAudioTrack>,
     room_events: Option<tauri::async_runtime::JoinHandle<()>>,
+    active_speakers: Arc<parking_lot::RwLock<HashSet<String>>>,
     channel_id: String, can_speak: bool, muted: bool, deafened: bool,
     input_device_id: String, output_device_id: String, processing: NativeAudioProcessing,
 }
 
 impl Default for Inner {
     fn default() -> Self {
-        Self { room: None, audio: None, mic_track: None, room_events: None, channel_id: String::new(),
+        Self { room: None, audio: None, mic_track: None, room_events: None, active_speakers: Arc::new(parking_lot::RwLock::new(HashSet::new())), channel_id: String::new(),
             can_speak: false, muted: true, deafened: false, input_device_id: String::new(),
             output_device_id: String::new(), processing: NativeAudioProcessing::default() }
     }
@@ -86,6 +88,7 @@ fn set_remote_audio_enabled(room: &Room, enabled: bool) {
 
 async fn close_previous(inner: &mut Inner) -> Option<Room> {
     if let Some(task) = inner.room_events.take() { task.abort(); }
+    inner.active_speakers.write().clear();
     inner.mic_track = None; inner.audio = None; inner.channel_id.clear(); inner.can_speak = false;
     inner.deafened = false; inner.room.take()
 }
@@ -102,7 +105,17 @@ pub async fn native_voice_join(state: State<'_, NativeVoiceState>, url: String, 
     let output_device_id = audio.playout_devices().next().map(|d| d.id.to_string()).unwrap_or_default();
     let (room, mut events) = Room::connect(&url, &token, RoomOptions::default()).await
         .map_err(|error| map_error("LiveKit ses odasına bağlanılamadı", error))?;
-    let event_task = tauri::async_runtime::spawn(async move { while events.recv().await.is_some() {} });
+    let active_speakers = Arc::new(parking_lot::RwLock::new(HashSet::new()));
+    let active_speakers_events = active_speakers.clone();
+    let event_task = tauri::async_runtime::spawn(async move {
+        while let Some(event) = events.recv().await {
+            if let RoomEvent::ActiveSpeakersChanged { speakers } = event {
+                let mut active = active_speakers_events.write();
+                active.clear();
+                active.extend(speakers.into_iter().map(|participant| participant.identity().to_string()));
+            }
+        }
+    });
     let start_muted = start_muted.unwrap_or(false);
     let mic_track = if can_speak {
         let track = LocalAudioTrack::create_audio_track("shakechat-microphone", audio.rtc_source());
@@ -114,7 +127,7 @@ pub async fn native_voice_join(state: State<'_, NativeVoiceState>, url: String, 
         Some(track)
     } else { None };
     let mut inner = state.inner.lock().await;
-    inner.room = Some(room); inner.audio = Some(audio); inner.mic_track = mic_track; inner.room_events = Some(event_task);
+    inner.room = Some(room); inner.audio = Some(audio); inner.mic_track = mic_track; inner.room_events = Some(event_task); inner.active_speakers = active_speakers;
     inner.channel_id = channel_id; inner.can_speak = can_speak; inner.muted = start_muted || !can_speak;
     inner.deafened = false; inner.input_device_id = input_device_id; inner.output_device_id = output_device_id;
     inner.processing = processing; Ok(())
@@ -176,16 +189,17 @@ pub async fn native_voice_snapshot(state: State<'_, NativeVoiceState>) -> Result
         return Ok(NativeVoiceSnapshot { status: "disconnected".into(), channel_id: String::new(), participants: Vec::new(),
             muted: inner.muted, deafened: inner.deafened, can_speak: false, input_devices: Vec::new(), output_devices: Vec::new(),
             input_device_id: inner.input_device_id.clone(), output_device_id: inner.output_device_id.clone(), engine: "native-webrtc-apm".into() }); };
+    let active_speakers = inner.active_speakers.read().clone();
     let mut participants = Vec::new(); let local = room.local_participant(); let local_name = local.name(); let local_identity = local.identity().to_string();
     participants.push(NativeVoiceParticipant { identity: local_identity.clone(), name: if local_name.trim().is_empty() { local_identity } else { local_name },
-        local: true, speaking: local.is_speaking(), muted: inner.mic_track.as_ref().map(LocalAudioTrack::is_muted).unwrap_or(true), camera: false, screen: false });
+        local: true, speaking: active_speakers.contains(&local_identity) || local.is_speaking(), muted: inner.mic_track.as_ref().map(LocalAudioTrack::is_muted).unwrap_or(true), camera: false, screen: false });
     for participant in room.remote_participants().values() {
         let publications = participant.track_publications(); let mic = publications.values().find(|p| p.source() == TrackSource::Microphone);
         let camera = publications.values().any(|p| p.source() == TrackSource::Camera && !p.is_muted());
         let screen = publications.values().any(|p| p.source() == TrackSource::Screenshare && !p.is_muted());
         let identity = participant.identity().to_string(); let name = participant.name();
         participants.push(NativeVoiceParticipant { identity: identity.clone(), name: if name.trim().is_empty() { identity } else { name }, local: false,
-            speaking: participant.is_speaking(), muted: mic.map(|p| p.is_muted()).unwrap_or(true), camera, screen });
+            speaking: active_speakers.contains(&identity) || participant.is_speaking(), muted: mic.map(|p| p.is_muted()).unwrap_or(true), camera, screen });
     }
     let (input_devices, output_devices) = if let Some(audio) = inner.audio.as_ref() {
         (audio.recording_devices().map(|d| NativeAudioDevice { device_id: d.id.to_string(), label: d.name }).collect(),
