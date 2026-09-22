@@ -9,6 +9,7 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+futures-util = "0.3"
 log = "0.4"
 livekit = { version = "0.9.1", features = ["rustls-tls-native-roots"] }
 parking_lot = "0.12"
