@@ -20,5 +20,7 @@ if ($null -eq $Config.plugins.updater) {
 }
 $Config.plugins.updater | Add-Member -NotePropertyName pubkey -NotePropertyValue $PublicKey -Force
 
-$Config | ConvertTo-Json -Depth 30 | Set-Content $ConfigPath -Encoding utf8
-Write-Host 'Tauri updater public key injected into build config.' -ForegroundColor Green
+$Json = $Config | ConvertTo-Json -Depth 30
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($ConfigPath, $Json, $Utf8NoBom)
+Write-Host 'Tauri updater public key injected into build config (UTF-8 no BOM).' -ForegroundColor Green
