@@ -57,7 +57,7 @@ if (!voice.includes('speakerGainPercentRef')) {
     'LiveKit webAudioMix',
   );
 
-  const helperNeedle = '  const setParticipantVolume = useCallback((identity: string, value: number) => {';
+  const helperNeedle = '  const join = useCallback(async (nextChannelId: string) => {';
   const helper = `  const applyParticipantPlayback = useCallback((identity: string) => {
     const participant = roomRef.current?.remoteParticipants.get(identity);
     if (!participant) return;
