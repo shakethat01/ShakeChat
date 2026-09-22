@@ -24,6 +24,7 @@ check('mono AI channels', noiseGate.includes('maxChannels: 1'));
 check('no experimental parallel aiGain', !noiseGate.includes('private aiGain'));
 check('no experimental parallel rawGain', !noiseGate.includes('private rawGain'));
 check('no experimental mix graph', !noiseGate.includes('private mix'));
+check('LiveKit restart reuses AudioContext', noiseGate.includes('const audioContext = options.audioContext || this.context;'));
 check('48 kHz mono capture', voice.includes('sampleRate: 48_000') && voice.includes('channelCount: 1'));
 check('browser NS forced off', voice.includes('noiseSuppression: false'));
 check('browser AGC forced off', voice.includes('autoGainControl: false'));
