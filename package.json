@@ -8,6 +8,9 @@
   "scripts": {
     "dev": "concurrently -n API,WEB -c auto \"npm run dev -w @shakechat/api\" \"npm run dev -w @shakechat/web\"",
     "build": "npm run build -w @shakechat/api && npm run build -w @shakechat/web",
+    "desktop:dev": "npm run dev -w @shakechat/desktop",
+    "desktop:check": "npm run check -w @shakechat/desktop",
+    "desktop:build": "npm run build -w @shakechat/desktop",
     "db:generate": "npm run prisma:generate -w @shakechat/api",
     "db:migrate": "npm run prisma:migrate -w @shakechat/api",
     "typecheck": "tsc --noEmit -p apps/api/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json",
