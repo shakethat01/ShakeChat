@@ -1,0 +1,40 @@
+name: Updater Branch Check
+
+on:
+  push:
+    branches:
+      - fix/updater-clean-v1
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install workspace dependencies
+        run: npm install
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Typecheck web and API
+        run: npm run typecheck
+
+      - name: Web tests
+        env:
+          LIVEKIT_PUBLIC_URL: ws://localhost:7880
+        run: npm run test -w @shakechat/web
+
+      - name: Cargo check desktop updater runtime
+        run: npm run desktop:check

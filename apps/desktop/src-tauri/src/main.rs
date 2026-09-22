@@ -4,9 +4,18 @@ mod native_voice;
 
 use native_voice::NativeVoiceState;
 
+fn updater_plugin() -> tauri_plugin_updater::UpdaterPlugin<tauri::Wry> {
+    let builder = tauri_plugin_updater::Builder::new();
+    let builder = match option_env!("SHAKECHAT_UPDATER_PUBLIC_KEY") {
+        Some(pubkey) if !pubkey.trim().is_empty() => builder.pubkey(pubkey),
+        _ => builder,
+    };
+    builder.build()
+}
+
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(updater_plugin())
         .manage(NativeVoiceState::default())
         .invoke_handler(tauri::generate_handler![
             native_voice::native_voice_join,

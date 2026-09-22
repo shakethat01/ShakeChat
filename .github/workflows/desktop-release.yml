@@ -1,0 +1,55 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install workspace dependencies
+        run: npm install
+
+      - name: Verify updater signing configuration
+        env:
+          PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PUBLIC_KEY: ${{ vars.TAURI_SIGNING_PUBLIC_KEY }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_KEY)) { throw 'TAURI_SIGNING_PRIVATE_KEY secret is missing.' }
+          if ([string]::IsNullOrWhiteSpace($env:PUBLIC_KEY)) { throw 'TAURI_SIGNING_PUBLIC_KEY repository variable is missing.' }
+
+      - name: Publish signed ShakeChat installer and updater manifest
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+          SHAKECHAT_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_SIGNING_PUBLIC_KEY }}
+          VITE_API_ORIGIN: https://chat.shakethat.com.tr
+        with:
+          projectPath: apps/desktop
+          tauriScript: npm run tauri
+          tagName: app-v__VERSION__
+          releaseName: ShakeChat v__VERSION__
+          releaseBody: ShakeChat Windows masaustu surumu ve otomatik guncelleme dosyalari.
+          releaseDraft: false
+          prerelease: false
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          updaterJsonPreferNsis: true
