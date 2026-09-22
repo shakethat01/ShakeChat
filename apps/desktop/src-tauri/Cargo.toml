@@ -1,0 +1,21 @@
+[package]
+name = "shakechat-desktop"
+version = "0.1.0"
+description = "ShakeChat desktop client"
+authors = ["ShakeThat"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+log = "0.4"
+livekit = "0.9.1"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[features]
+default = []
