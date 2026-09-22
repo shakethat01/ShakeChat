@@ -144,7 +144,8 @@ export function useNativeVoice(enabled:boolean,onError:(message:string)=>void,pr
 
   useEffect(()=>{
     if(!enabled||!isTauriRuntime())return;
-    const timer=window.setInterval(()=>{void refreshSnapshot()},350);
+    // Native LiveKit already tracks active-speaker events; keep the React snapshot close to that event stream.
+    const timer=window.setInterval(()=>{void refreshSnapshot()},75);
     void refreshSnapshot();
     return()=>window.clearInterval(timer);
   },[enabled,refreshSnapshot]);
