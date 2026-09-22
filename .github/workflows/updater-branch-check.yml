@@ -6,10 +6,14 @@ on:
       - fix/updater-clean-v1
   workflow_dispatch:
 
+concurrency:
+  group: updater-branch-check-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -38,3 +42,30 @@ jobs:
 
       - name: Cargo check desktop updater runtime
         run: npm run desktop:check
+
+      - name: Generate ephemeral updater signing key
+        shell: pwsh
+        run: |
+          $key = Join-Path $env:RUNNER_TEMP 'shakechat-ci-updater.key'
+          npm run tauri -w @shakechat/desktop -- signer generate -w $key --ci
+          if ($LASTEXITCODE -ne 0) { throw 'Could not generate ephemeral updater signing key.' }
+          if (-not (Test-Path "$key.pub")) { throw 'Updater public key was not generated.' }
+          $publicKey = (Get-Content -Raw "$key.pub").Trim()
+          if ([string]::IsNullOrWhiteSpace($publicKey)) { throw 'Updater public key is empty.' }
+          "TAURI_SIGNING_PRIVATE_KEY=$key" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SHAKECHAT_UPDATER_PUBLIC_KEY=$publicKey" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build signed NSIS updater smoke bundle
+        run: npm run desktop:build
+
+      - name: Verify installer and updater signature
+        shell: pwsh
+        run: |
+          $nsis = Join-Path $PWD 'apps\desktop\src-tauri\target\release\bundle\nsis'
+          $installer = Get-ChildItem $nsis -Filter '*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          $signature = Get-ChildItem $nsis -Filter '*.exe.sig' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer missing: $nsis" }
+          if (-not $signature) { throw "Updater signature missing: $nsis" }
+          Write-Host "Installer OK: $($installer.Name)"
+          Write-Host "Signature OK: $($signature.Name)"
