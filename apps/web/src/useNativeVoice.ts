@@ -63,7 +63,9 @@ export function useNativeVoice(enabled:boolean,onError:(message:string)=>void,pr
     echoCancellation:preferences.echoCancellation,
     noiseSuppression:preferences.noiseSuppression,
     autoGainControl:preferences.autoGainControl,
-  }),[preferences.autoGainControl,preferences.echoCancellation,preferences.noiseSuppression]);
+    noiseGateEnabled:preferences.noiseGateEnabled,
+    noiseGateThreshold:preferences.noiseGateThreshold,
+  }),[preferences.autoGainControl,preferences.echoCancellation,preferences.noiseGateEnabled,preferences.noiseGateThreshold,preferences.noiseSuppression]);
 
   const join=useCallback(async(channelId:string)=>{
     if(!enabled||!channelId||!isTauriRuntime())return;
