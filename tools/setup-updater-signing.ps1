@@ -28,8 +28,12 @@ $PublicKey = (Get-Content -Raw $PublicKeyPath).Trim()
 if ([string]::IsNullOrWhiteSpace($PublicKey)) { throw 'Public key bos.' }
 
 $env:SHAKECHAT_UPDATER_PUBLIC_KEY = $PublicKey
-$env:TAURI_SIGNING_PRIVATE_KEY = $KeyPath
+$env:TAURI_SIGNING_PRIVATE_KEY_PATH = $KeyPath
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
+
+& (Join-Path $PSScriptRoot 'inject-updater-public-key.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Updater public key Tauri config icine yazilamadi.' }
 
 $Gh = Get-Command gh -ErrorAction SilentlyContinue
 if ($Gh) {
@@ -54,10 +58,13 @@ if ($LASTEXITCODE -ne 0) { throw 'Desktop build basarisiz.' }
 
 $NsisDir = Join-Path $RepoRoot 'apps\desktop\src-tauri\target\release\bundle\nsis'
 $Installer = Get-ChildItem $NsisDir -Filter '*.exe' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$Signature = Get-ChildItem $NsisDir -Filter '*.exe.sig' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $Installer) { throw "NSIS installer bulunamadi: $NsisDir" }
+if (-not $Signature) { throw "Updater imza dosyasi bulunamadi: $NsisDir" }
 
 Write-Host ''
 Write-Host '=== TAMAM ===' -ForegroundColor Green
 Write-Host "Installer: $($Installer.FullName)" -ForegroundColor Green
+Write-Host "Signature: $($Signature.FullName)" -ForegroundColor Green
 Write-Host "Public key: $PublicKeyPath"
 Write-Host "Private key: $KeyPath  (YEDEKLE, PAYLASMA)" -ForegroundColor Yellow

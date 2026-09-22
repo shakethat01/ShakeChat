@@ -34,6 +34,12 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:PRIVATE_KEY)) { throw 'TAURI_SIGNING_PRIVATE_KEY secret is missing.' }
           if ([string]::IsNullOrWhiteSpace($env:PUBLIC_KEY)) { throw 'TAURI_SIGNING_PUBLIC_KEY repository variable is missing.' }
 
+      - name: Inject updater public key into Tauri bundler config
+        env:
+          SHAKECHAT_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_SIGNING_PUBLIC_KEY }}
+        shell: pwsh
+        run: ./tools/inject-updater-public-key.ps1
+
       - name: Publish signed ShakeChat installer and updater manifest
         uses: tauri-apps/tauri-action@v1
         env:
