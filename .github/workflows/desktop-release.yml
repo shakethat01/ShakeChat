@@ -2,9 +2,16 @@ name: Desktop Release
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - release/updater-test
 
 permissions:
   contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   windows-release:
