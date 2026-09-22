@@ -20,12 +20,6 @@ type NativeSnapshot = {
   engine:string;
 };
 
-type ExtendedPreferences = AppPreferences & {
-  aiNoiseSuppression?: boolean;
-  microphoneGainPercent?: number;
-  speakerGainPercent?: number;
-};
-
 const VOICE_MUTE_STORAGE_KEY = 'shakechat.voice-global-muted.v1';
 
 function isTauriRuntime(){return typeof window!=='undefined'&&'__TAURI_INTERNALS__' in window}
@@ -41,7 +35,6 @@ const EMPTY_SNAPSHOT:NativeSnapshot={
 };
 
 export function useNativeVoice(enabled:boolean,onError:(message:string)=>void,preferences:AppPreferences){
-  const prefs=preferences as ExtendedPreferences;
   const [snapshot,setSnapshot]=useState<NativeSnapshot>(EMPTY_SNAPSHOT);
   const [participantVolumes,setParticipantVolumes]=useState<Record<string,number>>({});
   const [locallyMutedParticipants,setLocallyMutedParticipants]=useState<string[]>([]);
@@ -65,11 +58,12 @@ export function useNativeVoice(enabled:boolean,onError:(message:string)=>void,pr
   },[]);
 
   const processing=useCallback(()=>({
+    // Keep the desktop controls honest: these switches configure libwebrtc APM
+    // directly in Rust/PlatformAudio rather than silently forcing them on.
     echoCancellation:preferences.echoCancellation,
-    // Desktop deliberately uses WebRTC's native APM instead of GTCRN/RNNoise.
-    noiseSuppression:prefs.aiNoiseSuppression!==false,
-    autoGainControl:true,
-  }),[preferences.echoCancellation,prefs.aiNoiseSuppression]);
+    noiseSuppression:preferences.noiseSuppression,
+    autoGainControl:preferences.autoGainControl,
+  }),[preferences.autoGainControl,preferences.echoCancellation,preferences.noiseSuppression]);
 
   const join=useCallback(async(channelId:string)=>{
     if(!enabled||!channelId||!isTauriRuntime())return;
