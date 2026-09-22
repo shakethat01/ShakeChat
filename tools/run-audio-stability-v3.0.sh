@@ -50,35 +50,39 @@ echo "=== ShakeChat Audio Stability v3.1 ==="
 echo "Backup: $BACKUP"
 echo
 
-echo "[1/8] Ana stabilite patch'i uygulanıyor..."
+echo "[1/9] Ana stabilite patch'i uygulanıyor..."
 node tools/apply-audio-stability-v3.0.mjs
 
 echo
-echo "[2/8] Duplicate runtime tuning hotfix..."
+echo "[2/9] Duplicate runtime tuning hotfix..."
 node tools/apply-audio-stability-v3.0-hotfix.mjs
 
 echo
-echo "[3/8] Worklet reuse v3.1..."
+echo "[3/9] Worklet reuse v3.1..."
 node tools/apply-audio-worklet-reuse-v3.1.mjs
 
 echo
-echo "[4/8] Statik verify..."
+echo "[4/9] Profil restart hata bildirimi..."
+node tools/apply-audio-stability-v3.1-error-surface.mjs
+
+echo
+echo "[5/9] Statik verify..."
 node tools/verify-audio-stability-v3.0.mjs
 
 echo
-echo "[5/8] git diff --check..."
+echo "[6/9] git diff --check..."
 git diff --check
 
 echo
-echo "[6/8] TypeScript typecheck..."
+echo "[7/9] TypeScript typecheck..."
 npm run typecheck
 
 echo
-echo "[7/8] Production web build..."
+echo "[8/9] Production web build..."
 VITE_API_ORIGIN=same-origin npm run build
 
 echo
-echo "[8/8] Tum testler..."
+echo "[9/9] Tum testler..."
 LIVEKIT_PUBLIC_URL=ws://localhost:7880 npm test
 
 trap - ERR
