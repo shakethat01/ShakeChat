@@ -1,0 +1,93 @@
+name: Web Deploy
+
+on:
+  push:
+    branches:
+      - release/updater-test
+  workflow_dispatch:
+
+concurrency:
+  group: web-deploy-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Verify deploy key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SHAKECHAT_VPS_SSH_KEY }}
+        run: |
+          if [ -z "$SSH_PRIVATE_KEY" ]; then
+            echo "SHAKECHAT_VPS_SSH_KEY secret is missing."
+            exit 1
+          fi
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SHAKECHAT_VPS_SSH_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/shakechat_deploy_ed25519
+          chmod 600 ~/.ssh/shakechat_deploy_ed25519
+          ssh-keyscan -H 146.59.105.92 >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy web build from the exact release commit
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          ssh -i ~/.ssh/shakechat_deploy_ed25519 -o IdentitiesOnly=yes ubuntu@146.59.105.92 \
+            "RELEASE_SHA='$RELEASE_SHA' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+
+          ROOT=/opt/shake/shakechat
+          BACKUP_ROOT=/opt/shake/backups
+          STAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+          BACKUP="$BACKUP_ROOT/shakechat-web-$STAMP"
+
+          cd "$ROOT"
+          mkdir -p "$BACKUP_ROOT"
+
+          restore_previous() {
+            code=$?
+            trap - ERR
+            echo "Web deploy failed; restoring previous dist."
+            if [ -d "$BACKUP" ]; then
+              rm -rf apps/web/dist
+              cp -a "$BACKUP" apps/web/dist
+            fi
+            exit "$code"
+          }
+          trap restore_previous ERR
+
+          if [ -d apps/web/dist ]; then
+            cp -a apps/web/dist "$BACKUP"
+          fi
+
+          git fetch --prune origin
+          git checkout -B release/updater-test "$RELEASE_SHA"
+          git reset --hard "$RELEASE_SHA"
+
+          npm install
+          VITE_API_ORIGIN=https://chat.shakethat.com.tr npm run build -w @shakechat/web
+          printf '%s\n' "$RELEASE_SHA" > apps/web/dist/version.txt
+          test -s apps/web/dist/index.html
+
+          trap - ERR
+          echo "Web deploy complete: $RELEASE_SHA"
+          REMOTE
+
+      - name: Verify public site
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          expected="$RELEASE_SHA"
+          actual=$(curl -fsS "https://chat.shakethat.com.tr/version.txt?sha=$RELEASE_SHA" | tr -d '\r\n')
+          if [ "$actual" != "$expected" ]; then
+            echo "Public site version mismatch. expected=$expected actual=$actual"
+            exit 1
+          fi
+          curl -fsS -o /dev/null https://chat.shakethat.com.tr/
+          echo "Public site is serving $actual"
