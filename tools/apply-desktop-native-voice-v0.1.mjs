@@ -9,11 +9,11 @@ let source=fs.readFileSync(file,'utf8');
 const oldImport="import { useVoice } from './useVoice';";
 const newImport="import { useVoiceRuntime as useVoice } from './useVoiceRuntime';";
 if(source.includes(newImport)){
-  console.log('Desktop native voice runtime zaten bagli.');
+  console.log('Birlesik RNNoise ses runtime zaten bagli.');
   process.exit(0);
 }
 const count=source.split(oldImport).length-1;
 if(count!==1)throw new Error(`useVoice import hedef sayisi ${count} (1 bekleniyordu)`);
 source=source.replace(oldImport,newImport);
 fs.writeFileSync(file,source);
-console.log('Desktop native voice runtime baglandi: browser=eski engine, Tauri=native Rust engine.');
+console.log('Birlesik RNNoise ses runtime baglandi: ses ve ekran paylasimi ayni baglantida.');
