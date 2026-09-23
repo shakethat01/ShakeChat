@@ -5,6 +5,7 @@ on:
     branches:
       - fix/updater-clean-v1
       - feature/voice-media-full-v1
+      - chore/1.9.5-baseline-cleanup
   workflow_dispatch:
 
 concurrency:
@@ -29,6 +30,13 @@ jobs:
 
       - name: Install workspace dependencies
         run: npm install
+
+      - name: Export regenerated package lock
+        uses: actions/upload-artifact@v4
+        with:
+          name: regenerated-package-lock
+          path: package-lock.json
+          if-no-files-found: error
 
       - name: Generate Prisma client
         run: npm run db:generate
