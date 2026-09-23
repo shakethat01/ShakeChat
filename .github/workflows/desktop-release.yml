@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - release/updater-test
+    paths-ignore:
+      - '.github/workflows/**'
 
 permissions:
   contents: write
