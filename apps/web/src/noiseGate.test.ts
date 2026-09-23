@@ -6,10 +6,6 @@ import { NoiseGateProcessor } from './noiseGate';
 const worklet = vi.hoisted(() => ({ nodes: [] as any[], fail: false }));
 vi.mock('@sapphi-red/web-noise-suppressor', () => ({
   loadRnnoise: vi.fn(async () => new ArrayBuffer(8)),
-  RnnoiseWorkletNode: class {
-    connect = vi.fn(); disconnect = vi.fn(); destroy = vi.fn();
-    constructor() { if (worklet.fail) throw new Error('worklet unavailable'); worklet.nodes.push(this); }
-  },
 }));
 function node() {
   return {
@@ -43,7 +39,19 @@ async function setup(gate: boolean, suppression: boolean, sampleRate = 48_000) {
 }
 beforeEach(() => {
   vi.useFakeTimers(); worklet.nodes.length = 0; worklet.fail = false;
-  vi.stubGlobal('AudioWorkletNode', class {});
+  vi.stubGlobal('AudioWorkletNode', class {
+    connect = vi.fn();
+    disconnect = vi.fn();
+    port = {
+      addEventListener: vi.fn(),
+      start: vi.fn(),
+      postMessage: vi.fn(),
+    };
+    constructor() {
+      if (worklet.fail) throw new Error('worklet unavailable');
+      worklet.nodes.push(this);
+    }
+  });
   vi.stubGlobal('MediaStream', class { constructor(public tracks: unknown[]) {} });
 });
 afterEach(async () => {
@@ -58,6 +66,7 @@ it.each([true, false])('keeps RNNoise selected with gate enabled=%s', async gate
   expect(g.mix.connect).toHaveBeenCalledWith(g.bypass);
   expect(g.source.connect).not.toHaveBeenCalledWith(g.bypass);
   expect(worklet.nodes[0].connect).toHaveBeenCalledWith(g.denoised);
+  expect(worklet.nodes[0].port.addEventListener).toHaveBeenCalledWith('message', expect.any(Function));
 });
 it('switches all four settings combinations without replacing the published track', async () => {
   const g = await setup(true, true);
