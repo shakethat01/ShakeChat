@@ -117,10 +117,10 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
     }).catch(() => undefined);
     let gate = noiseGateProcessorRef.current;
     if (!gate) {
-      gate = new NoiseGateProcessor(preferences.noiseGateEnabled, preferences.noiseGateThreshold);
+      gate = new NoiseGateProcessor(preferences.noiseGateEnabled, preferences.noiseGateThreshold, preferences.noiseSuppression);
       noiseGateProcessorRef.current = gate;
     } else {
-      gate.setSettings(preferences.noiseGateEnabled, preferences.noiseGateThreshold);
+      gate.setSettings(preferences.noiseGateEnabled, preferences.noiseGateThreshold, preferences.noiseSuppression);
     }
     if (track.getProcessor()?.name !== gate.name) await track.setProcessor(gate);
     if (roomRef.current === room) setMicrophoneTrack(track.mediaStreamTrack);

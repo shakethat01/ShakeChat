@@ -52,6 +52,10 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
   private context?: AudioContext;
   private source?: MediaStreamAudioSourceNode;
   private rnnoise?: RnnoiseWorkletNode;
+  private denoisedGain?: GainNode;
+  private rawGain?: GainNode;
+  private inputMix?: GainNode;
+  private suppressionEnabled = true;
   private analyser?: AnalyserNode;
   private delay?: DelayNode;
   private gain?: GainNode;
@@ -71,12 +75,13 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
   private readonly holdMs = 220;
   private readonly closedGain = 0.001;
 
-  constructor(enabled = true, thresholdDb = -48) {
-    this.setSettings(enabled, thresholdDb);
+  constructor(enabled = true, thresholdDb = -48, suppressionEnabled = true) {
+    this.setSettings(enabled, thresholdDb, suppressionEnabled);
   }
 
-  setSettings(enabled: boolean, thresholdDb: number) {
+  setSettings(enabled: boolean, thresholdDb: number, suppressionEnabled = true) {
     this.enabled = enabled;
+    this.suppressionEnabled = suppressionEnabled;
     this.thresholdDb = Math.max(-70, Math.min(-25, thresholdDb));
     this.aboveSince = 0;
     this.applyMixState();
@@ -118,7 +123,19 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     this.bypassGain = bypassGain;
     this.destination = destination;
 
-    let processedInput: AudioNode = source;
+    const inputMix = context.createGain();
+    const rawGain = context.createGain();
+    const denoisedGain = context.createGain();
+    this.inputMix = inputMix;
+    this.rawGain = rawGain;
+    this.denoisedGain = denoisedGain;
+    // Start silent: never leak raw capture while the worklet is loading.
+    rawGain.gain.value = 0;
+    denoisedGain.gain.value = 0;
+    source.connect(rawGain);
+    rawGain.connect(inputMix);
+    denoisedGain.connect(inputMix);
+    const processedInput: AudioNode = inputMix;
     this.rnnoiseReady = false;
 
     if (context.sampleRate === 48_000 && typeof AudioWorkletNode !== 'undefined') {
@@ -130,7 +147,7 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
         });
         source.connect(rnnoise);
         this.rnnoise = rnnoise;
-        processedInput = rnnoise;
+        rnnoise.connect(denoisedGain);
         this.rnnoiseReady = true;
         console.info('[voice] RNNoise suppression ready', { sampleRate: context.sampleRate, maxChannels: 2 });
       } catch (error) {
@@ -148,7 +165,8 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     delay.connect(gain);
     gain.connect(destination);
 
-    source.connect(bypassGain);
+    // Bypass only the gate, not the selected noise suppression.
+    processedInput.connect(bypassGain);
     bypassGain.connect(destination);
 
     this.processedTrack = destination.stream.getAudioTracks()[0];
@@ -166,6 +184,12 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     const gain = this.gain;
     const bypassGain = this.bypassGain;
     if (!context || !gain || !bypassGain) return;
+
+    const useRnnoise = this.suppressionEnabled && this.rnnoiseReady;
+    for (const [node, value] of [[this.rawGain, useRnnoise ? 0 : 1], [this.denoisedGain, useRnnoise ? 1 : 0]] as const) {
+      node?.gain.cancelScheduledValues(context.currentTime);
+      node?.gain.setTargetAtTime(value, context.currentTime, 0.008);
+    }
 
     gain.gain.cancelScheduledValues(context.currentTime);
     bypassGain.gain.cancelScheduledValues(context.currentTime);
@@ -206,7 +230,7 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
       this.noiseFloorDb = (this.noiseFloorDb * 0.97) + (db * 0.03);
     }
 
-    const adaptiveMargin = this.rnnoiseReady ? 8 : 10;
+    const adaptiveMargin = this.rnnoiseReady && this.suppressionEnabled ? 8 : 10;
     const effectiveThreshold = Math.max(this.thresholdDb, this.noiseFloorDb + adaptiveMargin);
     const above = db >= effectiveThreshold;
 
@@ -232,6 +256,9 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     try { this.source?.disconnect(); } catch {}
     try { this.rnnoise?.destroy(); } catch {}
     try { this.rnnoise?.disconnect(); } catch {}
+    try { this.rawGain?.disconnect(); } catch {}
+    try { this.denoisedGain?.disconnect(); } catch {}
+    try { this.inputMix?.disconnect(); } catch {}
     try { this.analyser?.disconnect(); } catch {}
     try { this.delay?.disconnect(); } catch {}
     try { this.gain?.disconnect(); } catch {}
@@ -243,6 +270,9 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
 
     this.source = undefined;
     this.rnnoise = undefined;
+    this.rawGain = undefined;
+    this.denoisedGain = undefined;
+    this.inputMix = undefined;
     this.analyser = undefined;
     this.delay = undefined;
     this.gain = undefined;

@@ -1,7 +1,7 @@
 {
   "name": "@shakechat/desktop",
   "private": true,
-  "version": "1.9.4",
+  "version": "1.9.5",
   "scripts": {
     "tauri": "tauri",
     "dev": "cross-env VITE_API_ORIGIN=https://chat.shakethat.com.tr tauri dev",

@@ -51,3 +51,21 @@ Bu değişiklikte:
 Mevcut `npm ci`, başlangıç dalındaki package-lock/package.json uyumsuzluğu nedeniyle
 başarısızdır. Doğrulama için `npm install --ignore-scripts --package-lock=false`
 kullanıldı; bu ses düzeltmesine bağımlılık güncellemesi dahil edilmedi.
+
+## 1.9.5 — Bağımsız gürültü kontrolleri
+
+1.9.4 kullanıcı tarafından gerçek kullanımda doğrulandı. Bu sürüm kazanç,
+eşik, bekleme süreleri ve varsayılan filtre sırasını korur. Gürültü azaltma
+tercihi artık RNNoise seçimini de kontrol eder. Ses kapısını kapatmak RNNoise
+filtresini kapatmaz; yalnız kapının gecikme ve susturma yolunu atlar.
+Ayarlar aynı çıkış track üzerinde değiştirilir. RNNoise kullanılamıyorsa
+mevcut tarayıcı gürültü azaltma ve ses kapısı fallback davranışı korunur.
+
+57 web testi ve production build geçti. Yeni 5 test dört ayar birleşimini,
+aynı mikrofon/track kullanımını ve RNNoise kullanılamadığında ses yolunun
+açık kalmasını kapsar. Testler ses grafiğini taklit eder; klavye bastırma
+kalitesini veya gerçek Windows akustiğini ölçmez.
+
+Kabul testi: Gürültü azaltma açıkken ses kapısını kapatıp konuş + klavye
+testi yap. Ardından gürültü azaltmayı kapat/aç; mikrofon ve oda bağlantısı
+kesilmeden filtre farkı duyulmalı. Son olarak her iki ayarı yeniden aç.
