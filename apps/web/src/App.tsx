@@ -6,7 +6,7 @@ import { chatSocket, closeChatSocket } from './socket';
 import { useChat } from './useChat';
 import { DirectChat, FriendsHome, SocialSidebar } from './Social';
 import { useDirectMessages } from './useDirectMessages';
-import { useVoice } from './useVoice';
+import { useVoiceRuntime as useVoice } from './useVoiceRuntime';
 import { VoiceDock, VoicePanel } from './Voice';
 import { ChannelOrganizer, MessageText, ProfileModal, ProfileModeDot, SearchPanel, profileModeLabel } from './V09Panels';
 import { AppSettingsModal } from './AppSettings';
