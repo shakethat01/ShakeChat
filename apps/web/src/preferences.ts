@@ -27,7 +27,7 @@ export const DEFAULT_PREFERENCES: AppPreferences = {
   screenQuality: 'high',
   echoCancellation: true,
   noiseSuppression: true,
-  autoGainControl: true,
+  autoGainControl: false,
   noiseGateEnabled: true,
   noiseGateThreshold: -48,
   voiceInputMode: 'voice_activity',
