@@ -1,0 +1,6 @@
+/* Realtime speaking presence must follow the meter without UI easing delay. */
+.voice-person,
+.voice-person::before,
+.voice-dock-member{
+  transition:none!important;
+}
