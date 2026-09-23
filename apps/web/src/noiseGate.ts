@@ -68,10 +68,12 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
   private rnnoiseReady = false;
   private readonly vad = new RnnoiseVadState();
 
-  private readonly lookAheadSeconds = 0.045;
-  private readonly minimumFallbackVoiceMs = 35;
-  private readonly holdMs = 260;
-  private readonly closedGain = 0.001;
+  // Give the VAD enough time to distinguish a real syllable from a desk/keyboard
+  // impulse before the corresponding audio reaches the output gate.
+  private readonly lookAheadSeconds = 0.075;
+  private readonly minimumFallbackVoiceMs = 45;
+  private readonly holdMs = 150;
+  private readonly closedGain = 0;
 
   constructor(enabled = true, thresholdDb = -48, suppressionEnabled = true) {
     this.setSettings(enabled, thresholdDb, suppressionEnabled);
@@ -107,7 +109,7 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     analyser.fftSize = 1024;
     analyser.smoothingTimeConstant = 0.1;
 
-    const delay = context.createDelay(0.1);
+    const delay = context.createDelay(0.12);
     delay.delayTime.value = this.lookAheadSeconds;
 
     const gain = context.createGain();
@@ -241,20 +243,19 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     const above = db >= effectiveThreshold;
     const vadFresh = this.rnnoiseReady && this.vad.isFresh(now);
 
-    if (vadFresh) {
-      // RNNoise has already classified the current 10 ms frames. A keyboard or desk
-      // hit can be very loud, but it does not open the gate unless RNNoise also sees
-      // sustained human speech. The dB threshold remains a second safety layer.
-      if (above && this.vad.isSpeechStable(now)) {
+    if (this.rnnoiseReady) {
+      // When RNNoise is available, do not silently drop back to a pure loudness gate.
+      // That fallback was exactly what could let a desk impact through if VAD messages
+      // were briefly late. Fresh VAD evidence is now required to open the gate.
+      if (vadFresh && above && this.vad.isSpeechStable(now)) {
         this.openUntil = now + this.holdMs;
         gain.gain.setTargetAtTime(1, context.currentTime, 0.004);
-      } else if (now <= this.openUntil && this.vad.shouldKeepOpen(now) && db >= effectiveThreshold - 8) {
+      } else if (vadFresh && now <= this.openUntil && this.vad.shouldKeepOpen(now) && db >= effectiveThreshold - 8) {
         this.openUntil = now + this.holdMs;
       }
       this.aboveSince = 0;
     } else {
-      // If the worklet cannot provide fresh VAD data, keep the old level gate as a
-      // safe fallback rather than losing microphone audio entirely.
+      // Only use the old level-gate fallback when RNNoise/VAD could not be created at all.
       if (above) {
         if (!this.aboveSince) this.aboveSince = now;
         if (now - this.aboveSince >= this.minimumFallbackVoiceMs) {
@@ -266,9 +267,11 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
       }
     }
 
-    const speechHoldingGate = vadFresh ? this.vad.shouldKeepOpen(now) : above;
+    const speechHoldingGate = this.rnnoiseReady
+      ? (vadFresh && this.vad.shouldKeepOpen(now))
+      : above;
     if (now > this.openUntil && !speechHoldingGate) {
-      gain.gain.setTargetAtTime(this.closedGain, context.currentTime, 0.09);
+      gain.gain.setTargetAtTime(this.closedGain, context.currentTime, 0.045);
     }
   }
 
