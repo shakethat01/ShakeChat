@@ -11,6 +11,8 @@ tauri-build = { version = "2", features = [] }
 # Audio capture, RNNoise and media share now use the single WebView/LiveKit JS
 # path. Do not compile the unused native LiveKit/prost graph into the shell.
 [dependencies]
+# Required by tauri::generate_context! for the embedded app configuration.
+serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-updater = "2"
 
