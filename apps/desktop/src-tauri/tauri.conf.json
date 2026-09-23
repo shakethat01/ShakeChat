@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ShakeChat",
-  "version": "1.9.7",
+  "version": "1.9.8",
   "identifier": "com.shakethat.shakechat",
   "build": {
     "beforeDevCommand": "node ../../tools/apply-desktop-native-voice-v0.1.mjs && npm run dev -w @shakechat/web -- --host 127.0.0.1",
