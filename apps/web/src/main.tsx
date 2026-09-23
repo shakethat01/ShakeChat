@@ -14,4 +14,5 @@ import './user-context.css';
 import './sidebar-context.css';
 import './member-list-ux.css';
 import './quick-switcher.css';
+import './voice-realtime.css';
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /><GlobalUserContext /><SidebarInteractions /><VoiceSlotGuard /><DomIdentityBridge /><MemberListUX /><QuickSwitcher /></React.StrictMode>);
