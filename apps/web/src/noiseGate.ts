@@ -1,9 +1,9 @@
 import { Track } from 'livekit-client';
 import type { AudioProcessorOptions, TrackProcessor } from 'livekit-client';
-import type { RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppressor';
-import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url';
+import rnnoiseVadWorkletPath from './rnnoiseVadWorklet.js?worker&url';
 import rnnoiseWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url';
 import rnnoiseWasmSimdPath from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url';
+import { RnnoiseVadState } from './rnnoiseVadState';
 
 type RnnoiseModule = typeof import('@sapphi-red/web-noise-suppressor');
 
@@ -35,23 +35,20 @@ async function prepareRnnoise(context: AudioContext) {
   }
 
   if (!rnnoiseReadyContexts.has(context)) {
-    await context.audioWorklet.addModule(rnnoiseWorkletPath);
+    await context.audioWorklet.addModule(rnnoiseVadWorkletPath);
     rnnoiseReadyContexts.add(context);
   }
 
-  return {
-    wasmBinary: await rnnoiseBinaryPromise,
-    RnnoiseWorkletNode: rnnoiseModule.RnnoiseWorkletNode,
-  };
+  return { wasmBinary: await rnnoiseBinaryPromise };
 }
 
 export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, AudioProcessorOptions> {
-  readonly name = 'shakechat-rnnoise-gate';
+  readonly name = 'shakechat-rnnoise-vad-gate';
   processedTrack?: MediaStreamTrack;
 
   private context?: AudioContext;
   private source?: MediaStreamAudioSourceNode;
-  private rnnoise?: RnnoiseWorkletNode;
+  private rnnoise?: AudioWorkletNode;
   private denoisedGain?: GainNode;
   private rawGain?: GainNode;
   private inputMix?: GainNode;
@@ -69,10 +66,11 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
   private aboveSince = 0;
   private noiseFloorDb = -70;
   private rnnoiseReady = false;
+  private readonly vad = new RnnoiseVadState();
 
   private readonly lookAheadSeconds = 0.045;
-  private readonly minimumVoiceMs = 28;
-  private readonly holdMs = 220;
+  private readonly minimumFallbackVoiceMs = 35;
+  private readonly holdMs = 260;
   private readonly closedGain = 0.001;
 
   constructor(enabled = true, thresholdDb = -48, suppressionEnabled = true) {
@@ -137,24 +135,32 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     denoisedGain.connect(inputMix);
     const processedInput: AudioNode = inputMix;
     this.rnnoiseReady = false;
+    this.vad.reset();
 
     if (context.sampleRate === 48_000 && typeof AudioWorkletNode !== 'undefined') {
       try {
-        const { wasmBinary, RnnoiseWorkletNode: RnnoiseNode } = await prepareRnnoise(context);
-        const rnnoise = new RnnoiseNode(context, {
-          wasmBinary,
-          maxChannels: 2,
+        const { wasmBinary } = await prepareRnnoise(context);
+        const rnnoise = new AudioWorkletNode(context, 'shakechat-rnnoise-vad', {
+          processorOptions: {
+            wasmBinary,
+            maxChannels: 2,
+          },
         });
+        rnnoise.port.addEventListener('message', event => {
+          if (event.data?.type !== 'vad') return;
+          this.vad.push(Number(event.data.probability), performance.now());
+        });
+        rnnoise.port.start();
         source.connect(rnnoise);
         this.rnnoise = rnnoise;
         rnnoise.connect(denoisedGain);
         this.rnnoiseReady = true;
-        console.info('[voice] RNNoise suppression ready', { sampleRate: context.sampleRate, maxChannels: 2 });
+        console.info('[voice] RNNoise suppression + VAD ready', { sampleRate: context.sampleRate, maxChannels: 2 });
       } catch (error) {
-        console.warn('[voice] RNNoise unavailable, falling back to smart gate only', error);
+        console.warn('[voice] RNNoise VAD unavailable, falling back to level gate', error);
       }
     } else {
-      console.warn('[voice] RNNoise skipped because a 48 kHz AudioWorklet context is unavailable', {
+      console.warn('[voice] RNNoise VAD skipped because a 48 kHz AudioWorklet context is unavailable', {
         sampleRate: context.sampleRate,
         audioWorklet: typeof AudioWorkletNode !== 'undefined',
       });
@@ -233,19 +239,36 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     const adaptiveMargin = this.rnnoiseReady && this.suppressionEnabled ? 8 : 10;
     const effectiveThreshold = Math.max(this.thresholdDb, this.noiseFloorDb + adaptiveMargin);
     const above = db >= effectiveThreshold;
+    const vadFresh = this.rnnoiseReady && this.vad.isFresh(now);
 
-    if (above) {
-      if (!this.aboveSince) this.aboveSince = now;
-      if (now - this.aboveSince >= this.minimumVoiceMs) {
+    if (vadFresh) {
+      // RNNoise has already classified the current 10 ms frames. A keyboard or desk
+      // hit can be very loud, but it does not open the gate unless RNNoise also sees
+      // sustained human speech. The dB threshold remains a second safety layer.
+      if (above && this.vad.isSpeechStable(now)) {
         this.openUntil = now + this.holdMs;
         gain.gain.setTargetAtTime(1, context.currentTime, 0.004);
+      } else if (now <= this.openUntil && this.vad.shouldKeepOpen(now) && db >= effectiveThreshold - 8) {
+        this.openUntil = now + this.holdMs;
       }
-    } else {
       this.aboveSince = 0;
+    } else {
+      // If the worklet cannot provide fresh VAD data, keep the old level gate as a
+      // safe fallback rather than losing microphone audio entirely.
+      if (above) {
+        if (!this.aboveSince) this.aboveSince = now;
+        if (now - this.aboveSince >= this.minimumFallbackVoiceMs) {
+          this.openUntil = now + this.holdMs;
+          gain.gain.setTargetAtTime(1, context.currentTime, 0.004);
+        }
+      } else {
+        this.aboveSince = 0;
+      }
     }
 
-    if (now > this.openUntil && !above) {
-      gain.gain.setTargetAtTime(this.closedGain, context.currentTime, 0.11);
+    const speechHoldingGate = vadFresh ? this.vad.shouldKeepOpen(now) : above;
+    if (now > this.openUntil && !speechHoldingGate) {
+      gain.gain.setTargetAtTime(this.closedGain, context.currentTime, 0.09);
     }
   }
 
@@ -254,7 +277,7 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     this.meterTimer = undefined;
 
     try { this.source?.disconnect(); } catch {}
-    try { this.rnnoise?.destroy(); } catch {}
+    try { this.rnnoise?.port.postMessage('destroy'); } catch {}
     try { this.rnnoise?.disconnect(); } catch {}
     try { this.rawGain?.disconnect(); } catch {}
     try { this.denoisedGain?.disconnect(); } catch {}
@@ -280,6 +303,7 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     this.destination = undefined;
     this.samples = undefined;
     this.rnnoiseReady = false;
+    this.vad.reset();
     if (stopOutput) this.processedTrack = undefined;
   }
 }
