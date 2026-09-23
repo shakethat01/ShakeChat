@@ -36,7 +36,7 @@ function meterPercent(db: number) {
   return Math.max(0, Math.min(100, ((db + 70) / 60) * 100));
 }
 
-function analyserDb(analyser: AnalyserNode, samples: Float32Array) {
+function analyserDb(analyser: AnalyserNode, samples: Float32Array<ArrayBuffer>) {
   analyser.getFloatTimeDomainData(samples);
   let sum = 0;
   for (let i = 0; i < samples.length; i += 1) sum += samples[i] * samples[i];
@@ -172,8 +172,8 @@ function MicrophoneTest() {
       processedAnalyser.smoothingTimeConstant = 0.12;
       rawSource.connect(rawAnalyser);
       processedSource.connect(processedAnalyser);
-      const rawSamples = new Float32Array(rawAnalyser.fftSize);
-      const processedSamples = new Float32Array(processedAnalyser.fftSize);
+      const rawSamples = new Float32Array(new ArrayBuffer(rawAnalyser.fftSize * Float32Array.BYTES_PER_ELEMENT));
+      const processedSamples = new Float32Array(new ArrayBuffer(processedAnalyser.fftSize * Float32Array.BYTES_PER_ELEMENT));
 
       meterTimerRef.current = window.setInterval(() => {
         setInputDb(analyserDb(rawAnalyser, rawSamples));
