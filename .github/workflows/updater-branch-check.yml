@@ -7,6 +7,7 @@ on:
       - feature/voice-media-full-v1
       - feature/voice-vad-v1
       - feature/mic-test-v1
+      - feature/mic-test-v2
   workflow_dispatch:
 
 concurrency:
