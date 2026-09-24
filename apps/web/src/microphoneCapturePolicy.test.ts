@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it } from 'vitest';
-import { forceBrowserAgcOff } from './microphoneCapturePolicy';
+import { forceAudioTrackAgcOff, forceBrowserAgcOff } from './microphoneCapturePolicy';
 
 it('forces browser AGC off without changing the requested AEC/NS constraints', () => {
   const result = forceBrowserAgcOff({
@@ -19,6 +19,13 @@ it('forces browser AGC off without changing the requested AEC/NS constraints', (
     sampleRate: 48_000,
   });
   expect(result?.video).toBe(false);
+});
+
+it('keeps browser AGC off when LiveKit reapplies live audio constraints', () => {
+  expect(forceAudioTrackAgcOff({ echoCancellation: false, autoGainControl: true })).toEqual({
+    echoCancellation: false,
+    autoGainControl: false,
+  });
 });
 
 it('leaves non-audio capture constraints unchanged', () => {
