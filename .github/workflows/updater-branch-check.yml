@@ -8,6 +8,7 @@ on:
       - feature/voice-vad-v1
       - feature/mic-test-v1
       - feature/mic-test-v2
+      - feature/voice-agc-v1
   workflow_dispatch:
 
 concurrency:
