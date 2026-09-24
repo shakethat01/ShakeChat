@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import './microphoneCapturePolicy';
 import './screenAudioCapture';
 import { App } from './App';
 import { GlobalUserContext } from './GlobalUserContext';
