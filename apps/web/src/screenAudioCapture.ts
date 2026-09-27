@@ -24,6 +24,11 @@ export function withSystemAudioOptions(
   const requestedAudio = options?.audio;
   const audio: ExtendedAudioConstraints = {
     ...(typeof requestedAudio === 'object' ? requestedAudio : {}),
+    // System audio is already mixed. Microphone-style AGC/NS/AEC must not
+    // amplify or reshape music/game audio as though it were quiet speech.
+    autoGainControl: false,
+    noiseSuppression: false,
+    echoCancellation: false,
     suppressLocalAudioPlayback: false,
     ...(supported.restrictOwnAudio ? { restrictOwnAudio: true } : {}),
   };

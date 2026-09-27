@@ -30,6 +30,8 @@ type VoiceSnapshot = {
   participants:VoiceContextParticipant[];
   participantVolumes:Record<string,number>;
   locallyMutedParticipants:string[];
+  screenVolumes:Record<string,number>;
+  locallyMutedScreens:string[];
 };
 
 type BaseSnapshot = {
@@ -112,7 +114,7 @@ export function GlobalUserContext() {
   const [blocked, setBlocked] = useState<BlockedUser[]>([]);
   const [dms, setDms] = useState<DirectConversation[]>([]);
   const [serverMembers, setServerMembers] = useState<Member[]>([]);
-  const [voiceSnapshot,setVoiceSnapshot]=useState<VoiceSnapshot>({participants:[],participantVolumes:{},locallyMutedParticipants:[]});
+  const [voiceSnapshot,setVoiceSnapshot]=useState<VoiceSnapshot>({participants:[],participantVolumes:{},locallyMutedParticipants:[],screenVolumes:{},locallyMutedScreens:[]});
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [profile, setProfile] = useState<ResolvedTarget | null>(null);
   const [notice, setNotice] = useState('');
@@ -290,6 +292,8 @@ export function GlobalUserContext() {
   const voiceParticipant=menu?.voiceIdentity?voiceSnapshot.participants.find(person=>person.identity===menu.voiceIdentity):undefined;
   const voiceVolume=voiceParticipant?(voiceSnapshot.participantVolumes[voiceParticipant.identity]??100):100;
   const voiceLocallyMuted=voiceParticipant?voiceSnapshot.locallyMutedParticipants.includes(voiceParticipant.identity):false;
+  const screenVolume=voiceParticipant?(voiceSnapshot.screenVolumes?.[voiceParticipant.identity]??100):100;
+  const screenLocallyMuted=voiceParticipant?(voiceSnapshot.locallyMutedScreens?.includes(voiceParticipant.identity)??false):false;
   const profileCanDm = !!profile && profile.user.id !== me?.id && !blocked.some(item=>item.user.id===profile.user.id) && (
     friends.some(item=>item.id===profile.user.id) ||
     !!profile.member ||
@@ -307,9 +311,14 @@ export function GlobalUserContext() {
     }
   }
 
-  function sendVoiceAction(type:'volume'|'toggle-local-mute',identity:string,value?:number){
+  function sendVoiceAction(type:'volume'|'toggle-local-mute'|'screen-volume'|'toggle-screen-mute',identity:string,value?:number){
     setVoiceSnapshot(previous=>{
       if(type==='volume'&&typeof value==='number')return {...previous,participantVolumes:{...previous.participantVolumes,[identity]:value}};
+      if(type==='screen-volume'&&typeof value==='number')return {...previous,screenVolumes:{...previous.screenVolumes,[identity]:value}};
+      if(type==='toggle-screen-mute') {
+        const screens=previous.locallyMutedScreens??[];
+        return {...previous,locallyMutedScreens:screens.includes(identity)?screens.filter(item=>item!==identity):[...screens,identity]};
+      }
       const muted=previous.locallyMutedParticipants.includes(identity);
       return {...previous,locallyMutedParticipants:muted?previous.locallyMutedParticipants.filter(item=>item!==identity):[...previous.locallyMutedParticipants,identity]};
     });
@@ -375,7 +384,7 @@ export function GlobalUserContext() {
       </div>
       <button type="button" onClick={() => { setProfile(menu.target); setMenu(null); }}><UserRound size={16}/><span><b>Profili görüntüle</b><small>Kullanıcı kartını aç</small></span></button>
 
-      {voiceParticipant&&<><div className="global-user-menu-separator"><span>SES KONTROLLERİ</span></div>{voiceParticipant.local?<div className="global-user-menu-note"><Mic size={15}/><span>Bu sensin. Mikrofon, kulaklık, kamera ve yayın kontrollerin alt ses çubuğunda.</span></div>:<><button type="button" className={voiceLocallyMuted?'voice-context-mute active':'voice-context-mute'} onClick={()=>sendVoiceAction('toggle-local-mute',voiceParticipant.identity)}>{voiceLocallyMuted?<Volume2 size={16}/>:<VolumeX size={16}/>}<span><b>{voiceLocallyMuted?'Yerel sesi aç':'Yerel sessize al'}</b><small>Sadece senin tarafında uygulanır</small></span></button><label className="global-user-volume"><span>SES SEVİYESİ <b>{voiceVolume}%</b></span><input aria-label={`${voiceParticipant.name} ses seviyesi hızlı menü`} type="range" min="0" max="100" step="5" value={voiceVolume} onChange={event=>sendVoiceAction('volume',voiceParticipant.identity,Number(event.target.value))}/></label><div className="global-user-volume-presets" aria-label="Hızlı ses seviyeleri">{[25,50,75,100].map(value=><button key={value} type="button" className={voiceVolume===value?'active':''} onClick={()=>sendVoiceAction('volume',voiceParticipant.identity,value)}>{value}%</button>)}</div><div className="global-voice-state">{voiceParticipant.screen?<><Radio size={13}/> LIVE · ekran paylaşıyor</>:voiceParticipant.muted?<><MicOff size={13}/> Mikrofon kapalı</>:voiceParticipant.speaking?<><Mic size={13}/> Konuşuyor</>:<><Mic size={13}/> Ses kanalında</>}</div></>}</>}
+      {voiceParticipant&&<><div className="global-user-menu-separator"><span>SES KONTROLLERİ</span></div>{voiceParticipant.local?<div className="global-user-menu-note"><Mic size={15}/><span>Bu sensin. Mikrofon, kulaklık, kamera ve yayın kontrollerin alt ses çubuğunda.</span></div>:<><button type="button" className={voiceLocallyMuted?'voice-context-mute active':'voice-context-mute'} onClick={()=>sendVoiceAction('toggle-local-mute',voiceParticipant.identity)}>{voiceLocallyMuted?<Volume2 size={16}/>:<VolumeX size={16}/>}<span><b>{voiceLocallyMuted?'Yerel sesi aç':'Yerel sessize al'}</b><small>Sadece senin tarafında uygulanır</small></span></button><label className="global-user-volume"><span>KONUŞMA SESİ <b>{voiceVolume}%</b></span><input aria-label={`${voiceParticipant.name} ses seviyesi hızlı menü`} type="range" min="0" max="100" step="5" value={voiceVolume} onChange={event=>sendVoiceAction('volume',voiceParticipant.identity,Number(event.target.value))}/></label><div className="global-user-volume-presets" aria-label="Hızlı ses seviyeleri">{[25,50,75,100].map(value=><button key={value} type="button" className={voiceVolume===value?'active':''} onClick={()=>sendVoiceAction('volume',voiceParticipant.identity,value)}>{value}%</button>)}</div>{voiceParticipant.screen&&<><button type="button" onClick={()=>sendVoiceAction('toggle-screen-mute',voiceParticipant.identity)}>{screenLocallyMuted?<Volume2 size={16}/>:<VolumeX size={16}/>}<span><b>{screenLocallyMuted?'Yayın sesini aç':'Yayın sesini kapat'}</b><small>Konuşma sesini etkilemez</small></span></button><label className="global-user-volume"><span>YAYIN SESİ <b>{screenVolume}%</b></span><input aria-label={`${voiceParticipant.name} yayın ses seviyesi hızlı menü`} type="range" min="0" max="100" step="5" value={screenVolume} onChange={event=>sendVoiceAction('screen-volume',voiceParticipant.identity,Number(event.target.value))}/></label></>}<div className="global-voice-state">{voiceParticipant.screen?<><Radio size={13}/> LIVE · ekran paylaşıyor</>:voiceParticipant.muted?<><MicOff size={13}/> Mikrofon kapalı</>:voiceParticipant.speaking?<><Mic size={13}/> Konuşuyor</>:<><Mic size={13}/> Ses kanalında</>}</div></>}</>}
 
       {canDirectMessage && <button type="button" onClick={() => void openDm(target)}><MessageCircle size={16}/><span><b>Özel mesaj</b><small>{friend?'DM sohbetini aç':menu?.target.member?'Aynı sunucudan DM aç':'DM sohbetini aç'}</small></span></button>}
       {!isSelf && incoming && <button type="button" onClick={() => void doAction(() => api.acceptFriendRequest(incoming.id), 'Arkadaşlık isteği kabul edildi.')}><UserPlus size={16}/><span><b>Arkadaşlığı kabul et</b><small>Bekleyen isteği onayla</small></span></button>}

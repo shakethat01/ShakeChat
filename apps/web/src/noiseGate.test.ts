@@ -92,3 +92,46 @@ it.each(['sample-rate', 'worklet-failure'])('keeps an audible bypass if RNNoise 
   expect(g.output.stop).toHaveBeenCalled();
   for (const gain of g.gains) expect(gain.disconnect).toHaveBeenCalled();
 });
+
+it('reuses the init context and output on the SDK device-switch restart callback', async () => {
+  const g = await setup(false, true);
+  const output = g.processor.processedTrack;
+  for (let i = 0; i < 8; i++) {
+    // Exact shape from LiveKit 2.22.3 LocalTrack.setMediaStreamTrack: no context.
+    await g.processor.restart({ kind: 'audio', track: { id: `mic-${i}` } } as unknown as AudioProcessorOptions);
+    expect(g.processor.processedTrack).toBe(output);
+  }
+  expect(g.ctx.createMediaStreamSource).toHaveBeenCalledTimes(9);
+  expect(g.ctx.audioWorklet.addModule).toHaveBeenCalledTimes(1);
+  expect(g.output.stop).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(1);
+  await g.processor.destroy();
+  expect(g.output.stop).toHaveBeenCalledTimes(1);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it('rejects a closed replacement context before disconnecting a working graph', async () => {
+  const g = await setup(true, true);
+  await expect(g.processor.restart({ audioContext: { state: 'closed' }, track: {} } as unknown as AudioProcessorOptions)).rejects.toThrow('bağlamı hazır değil');
+  expect(g.source.disconnect).not.toHaveBeenCalled();
+  expect(g.output.stop).not.toHaveBeenCalled();
+});
+
+it('does not resurrect audio when destroyed during asynchronous worklet setup', async () => {
+  const g = context();
+  const processor = new NoiseGateProcessor();
+  processors.push(processor);
+  let ready!: () => void;
+  const loading = new Promise<void>(resolve => { ready = resolve; });
+  let finish!: () => void;
+  g.ctx.audioWorklet.addModule.mockImplementation(() => { ready(); return new Promise<void>(resolve => { finish = resolve; }); });
+  const pending = processor.init({ audioContext: g.ctx, track: {} } as unknown as AudioProcessorOptions);
+  const rejected = expect(pending).rejects.toThrow('iptal edildi');
+  await loading;
+  await processor.destroy();
+  finish();
+  await rejected;
+  expect(processor.processedTrack).toBeUndefined();
+  expect(g.output.stop).toHaveBeenCalledTimes(1);
+  expect(vi.getTimerCount()).toBe(0);
+});

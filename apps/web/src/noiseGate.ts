@@ -47,6 +47,7 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
   processedTrack?: MediaStreamTrack;
 
   private context?: AudioContext;
+  private buildGeneration = 0;
   private source?: MediaStreamAudioSourceNode;
   private rnnoise?: AudioWorkletNode;
   private denoisedGain?: GainNode;
@@ -92,17 +93,36 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
   }
 
   async restart(options: AudioProcessorOptions) {
+    // LiveKit 2.22.3 supplies audioContext to init(), but not to the restart
+    // callback used by setDeviceId(). Keep the context owned by the room.
+    const context = this.resolveContext(options);
     this.disconnect(false);
-    await this.build(options);
+    await this.build({ ...options, audioContext: context });
   }
 
   async destroy() {
+    this.buildGeneration += 1;
     this.disconnect(true);
+    this.context = undefined;
+  }
+
+  private resolveContext(options: { audioContext?: AudioContext }) {
+    const context = options.audioContext ?? this.context;
+    if (!context || context.state === 'closed') {
+      throw new Error('Mikrofon ses işleme bağlamı hazır değil. Mikrofonu yeniden seç.');
+    }
+    return context;
   }
 
   private async build(options: AudioProcessorOptions) {
-    const context = options.audioContext;
+    const context = this.resolveContext(options);
+    const generation = ++this.buildGeneration;
+    // A single output track survives device changes. Do not leave a silent,
+    // disconnected destination attached to the RTCRtpSender after a restart.
+    if (this.context && this.context !== context) this.disconnect(true);
     this.context = context;
+    if (context.state === 'suspended') await context.resume();
+    if (generation !== this.buildGeneration) throw new Error('Mikrofon işlemi iptal edildi.');
 
     const source = context.createMediaStreamSource(new MediaStream([options.track]));
     const analyser = context.createAnalyser();
@@ -114,7 +134,7 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
 
     const gain = context.createGain();
     const bypassGain = context.createGain();
-    const destination = context.createMediaStreamDestination();
+    const destination = this.destination ?? context.createMediaStreamDestination();
 
     this.source = source;
     this.analyser = analyser;
@@ -142,6 +162,7 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     if (context.sampleRate === 48_000 && typeof AudioWorkletNode !== 'undefined') {
       try {
         const { wasmBinary } = await prepareRnnoise(context);
+        if (generation !== this.buildGeneration) throw new Error('Mikrofon işlemi iptal edildi.');
         const rnnoise = new AudioWorkletNode(context, 'shakechat-rnnoise-vad', {
           processorOptions: {
             wasmBinary,
@@ -159,6 +180,7 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
         this.rnnoiseReady = true;
         console.info('[voice] RNNoise suppression + VAD ready', { sampleRate: context.sampleRate, maxChannels: 2 });
       } catch (error) {
+        if (generation !== this.buildGeneration) throw error;
         console.warn('[voice] RNNoise VAD unavailable, falling back to level gate', error);
       }
     } else {
@@ -291,7 +313,8 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     try { this.bypassGain?.disconnect(); } catch {}
 
     if (stopOutput) {
-      try { this.processedTrack?.stop(); } catch {}
+      // destination can exist while asynchronous worklet loading is pending.
+      try { this.destination?.stream.getAudioTracks().forEach(track => track.stop()); } catch {}
     }
 
     this.source = undefined;
@@ -303,7 +326,7 @@ export class NoiseGateProcessor implements TrackProcessor<Track.Kind.Audio, Audi
     this.delay = undefined;
     this.gain = undefined;
     this.bypassGain = undefined;
-    this.destination = undefined;
+    if (stopOutput) this.destination = undefined;
     this.samples = undefined;
     this.rnnoiseReady = false;
     this.vad.reset();

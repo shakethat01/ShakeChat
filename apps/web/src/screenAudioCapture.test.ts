@@ -11,6 +11,9 @@ describe('screen audio capture options', () => {
       surfaceSwitching: 'include',
       monitorTypeSurfaces: 'include',
       audio: {
+        autoGainControl: false,
+        noiseSuppression: false,
+        echoCancellation: false,
         suppressLocalAudioPlayback: false,
         restrictOwnAudio: true,
       },

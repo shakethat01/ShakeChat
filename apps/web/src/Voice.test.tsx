@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { VoiceDock, VoicePanel } from './Voice';
@@ -10,6 +10,7 @@ function voiceState(overrides:Record<string,unknown>={}){
     status:'connected' as const,channelId:'voice',participants:[{identity:'alice',name:'alice',local:true,speaking:false,muted:false,camera:false,screen:false}],videoTracks:[],muted:false,deafened:false,cameraEnabled:false,screenSharing:false,canSpeak:true,
     inputDevices:[],outputDevices:[],cameraDevices:[],inputDeviceId:'',outputDeviceId:'',cameraDeviceId:'',
     inputMode:'voice_activity' as const,pushToTalkKey:'Backquote',pushToTalkActive:false,participantVolumes:{},locallyMutedParticipants:[],
+    screenVolumes:{},locallyMutedScreens:[],microphoneTestActive:false,setScreenVolume:vi.fn(),toggleScreenLocalMute:vi.fn(),
     join:vi.fn(),leave:vi.fn(),toggleMute:vi.fn(),toggleDeafen:vi.fn(),toggleCamera:vi.fn(),toggleScreenShare:vi.fn(),switchInput:vi.fn(),switchOutput:vi.fn(),switchCamera:vi.fn(),setParticipantVolume:vi.fn(),toggleParticipantLocalMute:vi.fn(),
     ...overrides,
   };
@@ -122,4 +123,23 @@ it('clamps per-user playback volume to browser-safe limits',()=>{
   expect(clampVoiceVolume(-10)).toBe(0);
   expect(clampVoiceVolume(55.4)).toBe(55);
   expect(clampVoiceVolume(140)).toBe(100);
+});
+
+it('offers independent stream volume and mute directly on a remote screen tile',async()=>{
+  const voice=voiceState({
+    participants:[{identity:'bob',name:'Bob',local:false,speaking:false,muted:false,camera:false,screen:true}],
+    videoTracks:[{id:'bob:screen:1',identity:'bob',name:'Bob',local:false,source:'screen',publication:{videoTrack:undefined}}],
+    screenVolumes:{bob:35},participantVolumes:{bob:80},
+  });
+  render(<VoicePanel channelId="voice" channelName="General" voice={voice as any}/>);
+  expect((screen.getByRole('slider',{name:'Bob ses seviyesi'}) as HTMLInputElement).value).toBe('80');
+  const slider=screen.getByRole('slider',{name:'Bob yayın ses seviyesi'});
+  expect((slider as HTMLInputElement).value).toBe('35');
+  fireEvent.change(slider,{target:{value:'20'}});
+  fireEvent.click(screen.getByRole('button',{name:'Bob yayın sesini kapat'}));
+  expect(voice.setScreenVolume).toHaveBeenCalledWith('bob',20);
+  expect(voice.toggleScreenLocalMute).toHaveBeenCalledWith('bob');
+  expect(voice.setParticipantVolume).not.toHaveBeenCalled();
+  expect(voice.toggleParticipantLocalMute).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button',{name:'Izgaraya dön'})).toBeNull();
 });

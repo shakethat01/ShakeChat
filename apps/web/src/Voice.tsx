@@ -24,6 +24,10 @@ type VoiceState = {
   pushToTalkKey:string;
   pushToTalkActive:boolean;
   participantVolumes:Record<string,number>;
+  screenVolumes:Record<string,number>;
+  locallyMutedScreens:string[];
+  microphoneTestActive:boolean;
+  microphoneMutedPreference:boolean;
   locallyMutedParticipants:string[];
   join:(channelId:string)=>Promise<void>;
   leave:()=>Promise<void>;
@@ -35,15 +39,21 @@ type VoiceState = {
   switchOutput:(deviceId:string)=>Promise<void>;
   switchCamera:(deviceId:string)=>Promise<void>;
   setParticipantVolume:(identity:string,value:number)=>void;
+  setScreenVolume:(identity:string,value:number)=>void;
+  toggleScreenLocalMute:(identity:string)=>void;
   toggleParticipantLocalMute:(identity:string)=>void;
 };
 
-type VoiceContextAction = { type:'volume'|'toggle-local-mute'; identity:string; value?:number };
+type VoiceContextAction = { type:'volume'|'toggle-local-mute'|'screen-volume'|'toggle-screen-mute'; identity:string; value?:number };
 
 function deviceName(device:MediaDeviceInfo,index:number,prefix:string){return device.label||`${prefix} ${index+1}`}
 function pttLabel(voice:VoiceState){return `Bas-konuş · ${pushToTalkKeyLabel(voice.pushToTalkKey)}`}
+function microphoneLabel(voice:VoiceState){
+  if(voice.microphoneTestActive)return voice.microphoneMutedPreference?'Testten sonra mikrofonu aç':'Testten sonra mikrofonu kapat';
+  return voice.muted?'Mikrofonu aç':'Mikrofonu kapat';
+}
 
-function VideoTile({item,featured,onToggleFeature}:{item:VoiceVideoTrack;featured:boolean;onToggleFeature:()=>void}){
+function VideoTile({item,featured,onToggleFeature,voice}:{item:VoiceVideoTrack;featured:boolean;onToggleFeature:()=>void;voice:VoiceState}){
   const ref=useRef<HTMLVideoElement>(null);
   const shellRef=useRef<HTMLDivElement>(null);
   const clickTimer=useRef<number|null>(null);
@@ -55,6 +65,8 @@ function VideoTile({item,featured,onToggleFeature}:{item:VoiceVideoTrack;feature
     if(!element||!track)return;
     let stopped=false;
     track.attach(element);
+    // Audio has one dedicated playback path with source-specific controls.
+    element.muted = true;
     const updateMetrics=async()=>{
       let width=0,height=0,fps=0,bitrate=0,limit='';
       try{
@@ -104,19 +116,24 @@ function VideoTile({item,featured,onToggleFeature}:{item:VoiceVideoTrack;feature
   }
 
   function tileClick(event:MouseEvent<HTMLDivElement>){
-    if((event.target as HTMLElement).closest('button'))return;
+    if((event.target as HTMLElement).closest('button,input,label'))return;
     if(clickTimer.current!==null)window.clearTimeout(clickTimer.current);
     clickTimer.current=window.setTimeout(()=>{clickTimer.current=null;onToggleFeature()},220);
   }
 
   function tileDoubleClick(event:MouseEvent<HTMLDivElement>){
-    if((event.target as HTMLElement).closest('button'))return;
+    if((event.target as HTMLElement).closest('button,input,label'))return;
     if(clickTimer.current!==null){window.clearTimeout(clickTimer.current);clickTimer.current=null}
     void fullscreen();
   }
 
   return <div ref={shellRef} className={`video-tile ${item.source==='screen'?'screen':''} ${featured?'featured':''}`} onClick={tileClick} onDoubleClick={tileDoubleClick}>
-    <video ref={ref} autoPlay playsInline muted={item.local}/>
+    <video ref={ref} autoPlay playsInline muted/>
+    {item.source==='screen'&&!item.local&&<div className="screen-audio-controls" onClick={event=>event.stopPropagation()} onDoubleClick={event=>event.stopPropagation()}>
+      <button type="button" aria-label={`${item.name} yayın sesini ${voice.locallyMutedScreens?.includes(item.identity)?'aç':'kapat'}`} onClick={()=>voice.toggleScreenLocalMute(item.identity)}>{voice.locallyMutedScreens?.includes(item.identity)?<VolumeX size={16}/>:<Volume2 size={16}/>}</button>
+      <label>Yayın sesi<input aria-label={`${item.name} yayın ses seviyesi`} type="range" min="0" max="100" step="5" value={voice.screenVolumes?.[item.identity]??100} onChange={event=>voice.setScreenVolume(item.identity,Number(event.target.value))}/></label>
+      <small>{voice.locallyMutedScreens?.includes(item.identity)?'Sessiz':`${voice.screenVolumes?.[item.identity]??100}%`}</small>
+    </div>}
     <div className="video-tile-actions">
       <button type="button" aria-label={`${item.name} görüntüsünü ${featured?'ızgaraya döndür':'öne çıkar'}`} title={featured?'Izgaraya döndür':'Öne çıkar'} onClick={e=>{e.stopPropagation();onToggleFeature()}}>{featured?<Grid2X2 size={15}/>:<Focus size={15}/>}</button>
       <button type="button" aria-label={`${item.name} görüntüsünü tam ekran yap`} title="Tam ekran" onClick={e=>{e.stopPropagation();void fullscreen()}}><Maximize2 size={15}/></button>
@@ -130,9 +147,11 @@ function VoiceMemberList({voice,embedded=false}:{voice:VoiceState;embedded?:bool
     window.dispatchEvent(new CustomEvent('shakechat:voice-snapshot',{detail:{
       participants:voice.participants.map(person=>({identity:person.identity,name:person.name,local:person.local,speaking:person.speaking,muted:person.muted,camera:person.camera,screen:person.screen})),
       participantVolumes:voice.participantVolumes,
+      screenVolumes:voice.screenVolumes,
+      locallyMutedScreens:voice.locallyMutedScreens,
       locallyMutedParticipants:voice.locallyMutedParticipants,
     }}));
-  },[voice.participants,voice.participantVolumes,voice.locallyMutedParticipants]);
+  },[voice.participants,voice.participantVolumes,voice.locallyMutedParticipants,voice.screenVolumes,voice.locallyMutedScreens]);
 
   useEffect(()=>{
     const action=(event:Event)=>{
@@ -140,10 +159,12 @@ function VoiceMemberList({voice,embedded=false}:{voice:VoiceState;embedded?:bool
       if(!detail||!voice.participants.some(person=>person.identity===detail.identity&&!person.local))return;
       if(detail.type==='toggle-local-mute')voice.toggleParticipantLocalMute(detail.identity);
       else if(detail.type==='volume'&&typeof detail.value==='number')voice.setParticipantVolume(detail.identity,detail.value);
+      else if(detail.type==='screen-volume'&&typeof detail.value==='number')voice.setScreenVolume(detail.identity,detail.value);
+      else if(detail.type==='toggle-screen-mute')voice.toggleScreenLocalMute(detail.identity);
     };
     window.addEventListener('shakechat:voice-action',action as EventListener);
     return()=>window.removeEventListener('shakechat:voice-action',action as EventListener);
-  },[voice.participants,voice.setParticipantVolume,voice.toggleParticipantLocalMute]);
+  },[voice.participants,voice.setParticipantVolume,voice.toggleParticipantLocalMute,voice.setScreenVolume,voice.toggleScreenLocalMute]);
 
   return <div className={embedded?'voice-dock-members channel-voice-members':'voice-dock-members'} aria-label="Ses kanalındaki kullanıcılar">{voice.participants.map(person=>{
     const localMuted=voice.locallyMutedParticipants.includes(person.identity);
@@ -169,7 +190,7 @@ export function VoicePanel({channelId,channelName,voice}:{channelId:string;chann
 
     {voice.videoTracks.length>0&&<>
       <div className="stream-toolbar"><div><Radio size={15}/><span><b>CANLI YAYINLAR</b><small>{screens.length?`${screens.length} ekran paylaşımı`:''}{screens.length&&cameras.length?' · ':''}{cameras.length?`${cameras.length} kamera`:''}</small></span></div>{featuredId&&<button type="button" onClick={()=>setFeaturedId('')}><Grid2X2 size={14}/> Izgaraya dön</button>}</div>
-      <div className={`video-stage ${featuredId?'has-featured':''}`} aria-label="Canlı görüntüler">{videos.map(item=><VideoTile key={item.id} item={item} featured={item.id===featuredId} onToggleFeature={()=>setFeaturedId(current=>current===item.id?'':item.id)}/>)}</div>
+      <div className={`video-stage ${featuredId?'has-featured':''}`} aria-label="Canlı görüntüler">{videos.map(item=><VideoTile key={item.id} item={item} voice={voice} featured={item.id===featuredId} onToggleFeature={()=>setFeaturedId(current=>current===item.id?'':item.id)}/>)}</div>
     </>}
 
     <div className="voice-grid">{voice.participants.map(person=>{
@@ -179,7 +200,8 @@ export function VoicePanel({channelId,channelName,voice}:{channelId:string;chann
     })}</div>
 
     <div className="voice-controls">
-      <button className={voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?'control media-on':'control active'):(voice.muted?'control active':'control')} disabled={!voice.canSpeak} onClick={()=>void voice.toggleMute()}>{voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?<Mic size={20}/>:<MicOff size={20}/>):voice.muted?<MicOff size={20}/>:<Mic size={20}/>}<span>{!voice.canSpeak?'Konuşma yetkisi yok':voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?'Konuşuyorsun':pttLabel(voice)):(voice.muted?'Mikrofonu aç':'Mikrofonu kapat')}</span></button>
+      {voice.microphoneTestActive&&<p role="status">Mikrofon testi açık · Kanala test sesi gönderilmiyor.</p>}
+      <button className={voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?'control media-on':'control active'):(voice.muted?'control active':'control')} disabled={!voice.canSpeak} onClick={()=>void voice.toggleMute()}>{voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?<Mic size={20}/>:<MicOff size={20}/>):voice.muted?<MicOff size={20}/>:<Mic size={20}/>}<span>{!voice.canSpeak?'Konuşma yetkisi yok':voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?'Konuşuyorsun':pttLabel(voice)):microphoneLabel(voice)}</span></button>
       <button className={voice.deafened?'control active':'control'} onClick={()=>void voice.toggleDeafen()}><Headphones size={20}/><span>{voice.deafened?'Sesi aç':'Sağırlaştır'}</span></button>
       <button className={voice.cameraEnabled?'control media-on':'control'} disabled={!voice.canSpeak} onClick={()=>void voice.toggleCamera()}>{voice.cameraEnabled?<CameraOff size={20}/>:<Camera size={20}/>}<span>{voice.cameraEnabled?'Kamerayı kapat':'Kamerayı aç'}</span></button>
       <button className={voice.screenSharing?'control media-on':'control'} disabled={!voice.canSpeak} onClick={()=>void voice.toggleScreenShare()}>{voice.screenSharing?<ScreenShareOff size={20}/>:<MonitorUp size={20}/>}<span>{voice.screenSharing?'Paylaşımı durdur':'Ekran paylaş'}</span></button>
@@ -224,7 +246,7 @@ export function VoiceDock({channelName,voice}:{channelName:string;voice:VoiceSta
     <div className="voice-dock-shell">
       <div className="voice-dock">
         <div className="voice-dock-copy"><small>{voice.status==='reconnecting'?'Yeniden bağlanıyor…':'Ses bağlı'}</small><b>{channelName||'Ses kanalı'}</b><span>{voice.participants.length} kişi{liveCount?` · ${liveCount} yayın`:''}</span></div>
-        <div className="voice-dock-actions"><button aria-label={!voice.canSpeak?'Konuşma yetkisi yok':voice.inputMode==='push_to_talk'?pttLabel(voice):(voice.muted?'Mikrofonu aç':'Mikrofonu kapat')} title={voice.inputMode==='push_to_talk'?pttLabel(voice):undefined} disabled={!voice.canSpeak} className={voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?'media-on':'active'):(voice.muted?'active':'')} onClick={()=>void voice.toggleMute()}>{voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?<Mic size={17}/>:<MicOff size={17}/>):voice.muted?<MicOff size={17}/>:<Mic size={17}/>}</button><button aria-label={voice.deafened?'Sesi aç':'Sağırlaştır'} className={voice.deafened?'active':''} onClick={()=>void voice.toggleDeafen()}><Headphones size={17}/></button><button aria-label={voice.cameraEnabled?'Kamerayı kapat':'Kamerayı aç'} disabled={!voice.canSpeak} className={voice.cameraEnabled?'media-on':''} onClick={()=>void voice.toggleCamera()}>{voice.cameraEnabled?<CameraOff size={17}/>:<Camera size={17}/>}</button><button aria-label={voice.screenSharing?'Ekran paylaşımını durdur':'Ekran paylaş'} disabled={!voice.canSpeak} className={voice.screenSharing?'media-on':''} onClick={()=>void voice.toggleScreenShare()}>{voice.screenSharing?<ScreenShareOff size={17}/>:<MonitorUp size={17}/>}</button><button aria-label="Ses bağlantısını kes" onClick={()=>void voice.leave()}><PhoneOff size={17}/></button></div>
+        <div className="voice-dock-actions"><button aria-label={!voice.canSpeak?'Konuşma yetkisi yok':voice.inputMode==='push_to_talk'?pttLabel(voice):microphoneLabel(voice)} title={voice.inputMode==='push_to_talk'?pttLabel(voice):undefined} disabled={!voice.canSpeak} className={voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?'media-on':'active'):(voice.muted?'active':'')} onClick={()=>void voice.toggleMute()}>{voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?<Mic size={17}/>:<MicOff size={17}/>):voice.muted?<MicOff size={17}/>:<Mic size={17}/>}</button><button aria-label={voice.deafened?'Sesi aç':'Sağırlaştır'} className={voice.deafened?'active':''} onClick={()=>void voice.toggleDeafen()}><Headphones size={17}/></button><button aria-label={voice.cameraEnabled?'Kamerayı kapat':'Kamerayı aç'} disabled={!voice.canSpeak} className={voice.cameraEnabled?'media-on':''} onClick={()=>void voice.toggleCamera()}>{voice.cameraEnabled?<CameraOff size={17}/>:<Camera size={17}/>}</button><button aria-label={voice.screenSharing?'Ekran paylaşımını durdur':'Ekran paylaş'} disabled={!voice.canSpeak} className={voice.screenSharing?'media-on':''} onClick={()=>void voice.toggleScreenShare()}>{voice.screenSharing?<ScreenShareOff size={17}/>:<MonitorUp size={17}/>}</button><button aria-label="Ses bağlantısını kes" onClick={()=>void voice.leave()}><PhoneOff size={17}/></button></div>
       </div>
       {!channelSlot&&<VoiceMemberList voice={voice}/>} 
     </div>

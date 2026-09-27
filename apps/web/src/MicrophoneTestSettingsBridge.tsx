@@ -4,6 +4,7 @@ import type { AudioProcessorOptions } from 'livekit-client';
 import { Activity, Headphones, Mic } from 'lucide-react';
 import { NoiseGateProcessor } from './noiseGate';
 import { loadVoiceDevices } from './voiceDevicePreferences';
+import { acquireMicrophoneTestIsolation } from './microphoneTestIsolation';
 
 type MicTestSettings = {
   echoCancellation: boolean;
@@ -43,7 +44,7 @@ function analyserDb(analyser: AnalyserNode, samples: Float32Array<ArrayBuffer>) 
   return 20 * Math.log10(Math.max(Math.sqrt(sum / samples.length), 1e-7));
 }
 
-function MicrophoneTest() {
+export function MicrophoneTest() {
   const [active, setActive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -62,8 +63,12 @@ function MicrophoneTest() {
   const processedSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const meterTimerRef = useRef<number | null>(null);
   const monitorRef = useRef<HTMLAudioElement | null>(null);
+  const operationRef = useRef(0);
+  const mountedRef = useRef(true);
+  const releaseIsolationRef = useRef<(() => Promise<void>) | null>(null);
 
-  function stop() {
+  async function stop() {
+    operationRef.current += 1;
     if (meterTimerRef.current !== null) window.clearInterval(meterTimerRef.current);
     meterTimerRef.current = null;
     try { rawSourceRef.current?.disconnect(); } catch {}
@@ -76,19 +81,36 @@ function MicrophoneTest() {
     }
     const processor = processorRef.current;
     processorRef.current = null;
-    if (processor) void processor.destroy();
     for (const track of streamRef.current?.getTracks() || []) track.stop();
     streamRef.current = null;
     rawTrackRef.current = null;
     const context = contextRef.current;
     contextRef.current = null;
-    if (context && context.state !== 'closed') void context.close().catch(() => undefined);
-    setActive(false);
-    setInputDb(-140);
-    setOutputDb(-140);
+    const release = releaseIsolationRef.current;
+    releaseIsolationRef.current = null;
+    if (mountedRef.current) {
+      setActive(false);
+      setBusy(false);
+      setMonitoring(false);
+      setInputDb(-140);
+      setOutputDb(-140);
+    }
+    try {
+      await processor?.destroy();
+      if (context && context.state !== 'closed') await context.close();
+    } catch {
+      // Capture tracks and local playback were already stopped synchronously.
+    } finally {
+      // Resume transmission only after the local monitor and capture are gone.
+      try { await release?.(); }
+      catch { if (mountedRef.current) setError('Test durdu; kanaldaki sesi geri açmak için mikrofon kontrolünü kullan.'); }
+    }
   }
 
-  useEffect(() => () => stop(), []);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; void stop(); };
+  }, []);
 
   useEffect(() => {
     const audio = monitorRef.current;
@@ -128,9 +150,13 @@ function MicrophoneTest() {
 
   async function start() {
     if (busy || active) return;
+    const operation = ++operationRef.current;
     setBusy(true);
     setError('');
     try {
+      const release = await acquireMicrophoneTestIsolation();
+      if (operation !== operationRef.current) { await release(); return; }
+      releaseIsolationRef.current = release;
       const settings = readSettings();
       setGateEnabled(settings.noiseGateEnabled);
       setThreshold(settings.noiseGateThreshold);
@@ -145,6 +171,7 @@ function MicrophoneTest() {
           ...(preferredDevice ? { deviceId: { exact: preferredDevice } } : {}),
         },
       });
+      if (operation !== operationRef.current) { stream.getTracks().forEach(track => track.stop()); return; }
       streamRef.current = stream;
       const track = stream.getAudioTracks()[0];
       if (!track) throw new Error('Mikrofon ses izi bulunamadı.');
@@ -154,10 +181,12 @@ function MicrophoneTest() {
       const context = new AudioContext({ sampleRate: 48_000, latencyHint: 'interactive' });
       contextRef.current = context;
       if (context.state === 'suspended') await context.resume();
+      if (operation !== operationRef.current) return;
 
       const processor = new NoiseGateProcessor(settings.noiseGateEnabled, settings.noiseGateThreshold, settings.noiseSuppression);
       processorRef.current = processor;
       await processor.init({ audioContext: context, track } as unknown as AudioProcessorOptions);
+      if (operation !== operationRef.current) return;
       if (!processor.processedTrack) throw new Error('İşlenmiş mikrofon izi oluşturulamadı.');
 
       const rawSource = context.createMediaStreamSource(new MediaStream([track]));
@@ -181,18 +210,20 @@ function MicrophoneTest() {
       }, 40);
       setActive(true);
     } catch (cause) {
-      stop();
-      setError(cause instanceof Error ? cause.message : 'Mikrofon testi başlatılamadı.');
+      if (operation === operationRef.current) {
+        await stop();
+        if (mountedRef.current) setError(cause instanceof Error ? cause.message : 'Mikrofon testi başlatılamadı.');
+      }
     } finally {
-      setBusy(false);
+      if (mountedRef.current && operation === operationRef.current) setBusy(false);
     }
   }
 
   const gateOpen = !gateEnabled || outputDb > -96;
   return <div className="setting-block mic-test-card">
-    <div className="setting-title"><Mic size={18}/><div><b>Mikrofon testi</b><small>Seçili mikrofonu aynı RNNoise + VAD + Noise Gate zincirinden geçirerek canlı test eder. Ses kanalına yayın yapmaz.</small></div></div>
+    <div className="setting-title"><Mic size={18}/><div><b>Mikrofon testi</b><small>Test sırasında mikrofonun kanala gönderilmez. Kendini dinlerken sesin yayına karışmasın diye paylaşılan sistem sesi de geçici duraklatılır; görüntü devam eder.</small></div></div>
     <div className="mic-test-toolbar">
-      <button type="button" className={active?'ghost':'primary compact'} disabled={busy} onClick={()=>active?stop():void start()}>{busy?'Başlatılıyor…':active?'Testi durdur':'Mikrofon testini başlat'}</button>
+      <button type="button" className={active?'ghost':'primary compact'} disabled={busy} onClick={()=>active?void stop():void start()}>{busy?'Başlatılıyor…':active?'Testi durdur':'Mikrofon testini başlat'}</button>
       <label className="mic-monitor-toggle"><input type="checkbox" checked={monitoring} onChange={event=>setMonitoring(event.target.checked)} disabled={!active}/><Headphones size={15}/><span>Kendimi dinle</span></label>
       {deviceLabel&&<small className="mic-test-device">{deviceLabel}</small>}
     </div>

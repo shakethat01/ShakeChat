@@ -3,6 +3,7 @@ import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { DEFAULT_PREFERENCES } from './preferences';
 import { useVoiceRuntime } from './useVoiceRuntime';
+import { acquireMicrophoneTestIsolation, isMicrophoneTestActive } from './microphoneTestIsolation';
 
 const state=vi.hoisted(()=>({rooms:[] as any[],screenPicker:null as null|(()=>Promise<void>), errors:vi.fn(), meter:vi.fn()}));
 vi.mock('./api',()=>({api:{voiceToken:vi.fn(async()=>({url:'wss://test',token:'test',canSpeak:true}))}}));
@@ -15,7 +16,7 @@ vi.mock('./noiseGate',()=>({NoiseGateProcessor:class {
   name='shakechat-rnnoise-gate';setSettings=vi.fn();destroy=vi.fn();
 }}));
 vi.mock('livekit-client',()=>{
-  const Source={Microphone:'microphone',Camera:'camera',ScreenShare:'screen'};
+  const Source={Microphone:'microphone',Camera:'camera',ScreenShare:'screen',ScreenShareAudio:'screen_audio'};
   class LocalAudioTrack {
     mediaStreamTrack={id:'published-filtered-track'};
     processor:any;
@@ -31,6 +32,7 @@ vi.mock('livekit-client',()=>{
     mic:any;
     camera:any;
     screen:any;
+    screenAudio:any;
     localParticipant:any;
     connect=vi.fn(async()=>{});
     disconnect=vi.fn(async()=>{});
@@ -44,7 +46,7 @@ vi.mock('livekit-client',()=>{
       this.active={audioinput:options.audioCaptureDefaults.deviceId||'default',audiooutput:options.audioOutput?.deviceId||'default',videoinput:'camera'};
       this.localParticipant={
         identity:'me',name:'Me',isLocal:true,isSpeaking:false,isMicrophoneEnabled:false,
-        getTrackPublication:(source:string)=>source===Source.Microphone?this.mic:source===Source.Camera?this.camera:this.screen,
+        getTrackPublication:(source:string)=>source===Source.Microphone?this.mic:source===Source.Camera?this.camera:source===Source.ScreenShareAudio?this.screenAudio:this.screen,
         setMicrophoneEnabled:vi.fn(async(enabled:boolean,capture:any)=>{
           if(enabled){
             this.mic ||= {track:new LocalAudioTrack(),isMuted:false};
@@ -59,6 +61,12 @@ vi.mock('livekit-client',()=>{
         setScreenShareEnabled:vi.fn(async(enabled:boolean)=>{
           if(state.screenPicker)await state.screenPicker();
           this.screen=enabled?{track:{},isMuted:false,trackSid:'screen'}:undefined;
+          if (enabled) {
+            const audio:any = { isMuted:false, isUpstreamPaused:false };
+            audio.pauseUpstream=vi.fn(async()=>{audio.isUpstreamPaused=true});
+            audio.resumeUpstream=vi.fn(async()=>{audio.isUpstreamPaused=false});
+            this.screenAudio=audio;
+          } else this.screenAudio=undefined;
           return this.screen;
         }),
       };
@@ -75,8 +83,10 @@ vi.mock('livekit-client',()=>{
 beforeEach(()=>{
   localStorage.clear();state.rooms=[];state.screenPicker=null;state.errors.mockClear();state.meter.mockClear();
   (window as any).__TAURI_INTERNALS__={};
+  vi.spyOn(HTMLMediaElement.prototype,'pause').mockImplementation(()=>{});
 });
-afterEach(()=>{cleanup();delete (window as any).__TAURI_INTERNALS__});
+const testReleases:(()=>Promise<void>)[]=[];
+afterEach(async()=>{for(const release of testReleases.splice(0))await act(async()=>{await release()});cleanup();vi.restoreAllMocks();delete (window as any).__TAURI_INTERNALS__});
 async function join(preferences=DEFAULT_PREFERENCES){
   const hook=renderHook(()=>useVoiceRuntime(true,state.errors,preferences));
   await act(async()=>{await hook.result.current.join('room')});
@@ -176,4 +186,130 @@ it('attaches RNNoise on the first push-to-talk press, then mutes on release',asy
   expect(result.current.muted).toBe(false);
   await act(async()=>{window.dispatchEvent(new KeyboardEvent('keyup',{code:DEFAULT_PREFERENCES.pushToTalkKey}))});
   expect(result.current.muted).toBe(true);
+});
+
+async function beginTest() {
+  let release!:()=>Promise<void>;
+  await act(async()=>{release=await acquireMicrophoneTestIsolation()});
+  testReleases.push(release);
+  return release;
+}
+
+it('isolates the mic and system-loopback monitor, then restores both without rejoining',async()=>{
+  const {result}=await join();
+  const room=state.rooms[0];
+  await act(async()=>{await result.current.toggleScreenShare()});
+  const video=room.screen;
+  const release=await beginTest();
+  expect(room.mic.isMuted).toBe(true);
+  expect(room.screenAudio.isUpstreamPaused).toBe(true);
+  expect(room.screen).toBe(video);
+  expect(result.current.microphoneTestActive).toBe(true);
+  await act(async()=>{await result.current.switchInput('mic-2');await result.current.toggleMute();await result.current.toggleMute()});
+  expect(room.mic.isMuted).toBe(true);
+  await act(async()=>{await release()});
+  expect(room.mic.isMuted).toBe(false);
+  expect(room.screenAudio.isUpstreamPaused).toBe(false);
+  expect(result.current.inputDeviceId).toBe('mic-2');
+  expect(room.disconnect).not.toHaveBeenCalled();
+});
+
+it('keeps an explicit mute selected during a test and never reopens after deafen',async()=>{
+  const {result}=await join();
+  const room=state.rooms[0];
+  let release=await beginTest();
+  await act(async()=>{await result.current.toggleMute();await release()});
+  expect(room.mic.isMuted).toBe(true);
+  await act(async()=>{await result.current.toggleMute()});
+  release=await beginTest();
+  await act(async()=>{await result.current.toggleDeafen();await release()});
+  expect(room.mic.isMuted).toBe(true);
+});
+
+it('blocks PTT and a new screen share during an isolated test',async()=>{
+  const {result}=await join({...DEFAULT_PREFERENCES,voiceInputMode:'push_to_talk'});
+  const release=await beginTest();
+  await act(async()=>{window.dispatchEvent(new KeyboardEvent('keydown',{code:DEFAULT_PREFERENCES.pushToTalkKey}));await result.current.toggleScreenShare()});
+  const room=state.rooms[0];
+  expect(room.localParticipant.isMicrophoneEnabled).toBe(false);
+  expect(room.localParticipant.setScreenShareEnabled).not.toHaveBeenCalled();
+  await act(async()=>{await release()});
+  expect(room.localParticipant.isMicrophoneEnabled).toBe(false);
+});
+
+it('does not start a test while the screen picker can publish a new system-audio track',async()=>{
+  const {result}=await join();
+  let finish!:()=>void;
+  state.screenPicker=()=>new Promise<void>(resolve=>{finish=resolve});
+  let sharing!:Promise<void>;
+  act(()=>{sharing=result.current.toggleScreenShare()});
+  await act(async()=>{await expect(acquireMicrophoneTestIsolation()).rejects.toThrow('seçimini bitirdikten')});
+  expect(isMicrophoneTestActive()).toBe(false);
+  await act(async()=>{finish();await sharing});
+});
+
+it('serializes rapid device switches and rolls back a failed acquisition before the next one',async()=>{
+  const {result}=await join();
+  const room=state.rooms[0];
+  let finish!:()=>void;
+  const entered:string[]=[];
+  room.switchActiveDevice.mockImplementation(async(kind:string,id:string)=>{
+    entered.push(id);
+    if(entered.length===1){await new Promise<void>(resolve=>{finish=resolve});throw new Error('device lost')}
+    room.active[kind]=id;return true;
+  });
+  let first!:Promise<void>,second!:Promise<void>;
+  await act(async()=>{first=result.current.switchInput('mic-2');second=result.current.switchInput('default');await Promise.resolve()});
+  expect(entered).toEqual(['mic-2']);
+  await act(async()=>{finish();await first;await second});
+  expect(entered).toEqual(['mic-2','default','default']);
+  expect(result.current.inputDeviceId).toBe('default');
+  expect(room.localParticipant.isMicrophoneEnabled).toBe(true);
+  expect(room.disconnect).not.toHaveBeenCalled();
+});
+
+function remoteAudio(id:string) {
+  const element=document.createElement('audio');
+  return {kind:'audio',sid:id,attach:vi.fn(()=>element),detach:vi.fn(),setVolume:vi.fn(),element};
+}
+
+it('controls mic and stream gain separately, deduplicates playback and preserves gain across deafen',async()=>{
+  const {result}=await join();
+  const room=state.rooms[0];
+  const mic=remoteAudio('mic'),stream=remoteAudio('stream');
+  await act(async()=>{
+    room.emit('TrackSubscribed',mic,{trackSid:'mic',source:'microphone'},{identity:'bob'});
+    room.emit('TrackSubscribed',stream,{trackSid:'stream',source:'screen_audio'},{identity:'bob'});
+    room.emit('TrackSubscribed',stream,{trackSid:'stream',source:'screen_audio'},{identity:'bob'});
+    result.current.setParticipantVolume('bob',25);result.current.setScreenVolume('bob',65);
+  });
+  expect(stream.attach).toHaveBeenCalledTimes(1);
+  expect(mic.setVolume).toHaveBeenLastCalledWith(.25);
+  expect(stream.setVolume).toHaveBeenLastCalledWith(.65);
+  await act(async()=>{result.current.toggleParticipantLocalMute('bob')});
+  expect(mic.setVolume).toHaveBeenLastCalledWith(0);
+  expect(stream.setVolume).toHaveBeenLastCalledWith(.65);
+  await act(async()=>{await result.current.toggleDeafen()});
+  expect(stream.setVolume).toHaveBeenLastCalledWith(0);
+  await act(async()=>{await result.current.toggleDeafen()});
+  expect(mic.setVolume).toHaveBeenLastCalledWith(0);
+  expect(stream.setVolume).toHaveBeenLastCalledWith(.65);
+  await act(async()=>{result.current.toggleScreenLocalMute('bob');result.current.toggleParticipantLocalMute('bob')});
+  expect(mic.setVolume).toHaveBeenLastCalledWith(.25);
+  expect(stream.setVolume).toHaveBeenLastCalledWith(0);
+  await act(async()=>{await result.current.leave()});
+  expect(mic.detach).toHaveBeenCalledTimes(1);
+  expect(stream.detach).toHaveBeenCalledTimes(1);
+  expect(document.body.contains(stream.element)).toBe(false);
+});
+
+it('does not mute or stop a published screen-audio track when the publisher mutes or deafens',async()=>{
+  const {result}=await join();
+  await act(async()=>{await result.current.toggleScreenShare()});
+  const room=state.rooms[0],audio=room.screenAudio,video=room.screen;
+  await act(async()=>{await result.current.toggleMute()});
+  await act(async()=>{await result.current.toggleDeafen()});
+  expect(audio.pauseUpstream).not.toHaveBeenCalled();
+  expect(audio.isMuted).toBe(false);
+  expect(room.screen).toBe(video);
 });
