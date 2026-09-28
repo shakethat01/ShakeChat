@@ -16,4 +16,9 @@ export class VoiceController {
   token(@Req() req: any, @Param('channelId') channelId: string) {
     return this.voice.createJoinToken(req.user.sub, channelId);
   }
+
+  @Post('channels/:channelId/screen-token')
+  screenToken(@Req() req: any, @Param('channelId') channelId: string) {
+    return this.voice.createScreenToken(req.user.sub, channelId);
+  }
 }
