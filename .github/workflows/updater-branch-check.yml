@@ -9,6 +9,7 @@ on:
       - feature/mic-test-v1
       - fix/voice-stability-1.9.9
       - fix/known-issues-1.9.10
+      - fix/stream-start-sound-1.9.12
   workflow_dispatch:
 
 concurrency:
@@ -83,7 +84,7 @@ jobs:
       - name: Upload Windows test installer
         uses: actions/upload-artifact@v4
         with:
-          name: ShakeChat-known-issues-1.9.10-test
+          name: ShakeChat-1.9.12-presence-stream-sound-test
           path: |
             apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
             apps/desktop/src-tauri/target/release/bundle/nsis/*.exe.sig
