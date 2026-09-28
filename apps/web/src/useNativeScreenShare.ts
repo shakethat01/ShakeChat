@@ -8,7 +8,11 @@ type BaseVoice = ReturnType<typeof useVoice>;
 type NativeScreenSource = { id:string; title:string; kind:'screen'|'window' };
 type NativeScreenToken = { token:string; url:string; room:string; channelId:string; ownerId:string; identity:string };
 
-function isTauriRuntime(){return typeof window!=='undefined'&&'__TAURI_INTERNALS__' in window}
+function isTauriRuntime(){
+  if(typeof window==='undefined')return false;
+  const internals=(window as unknown as {__TAURI_INTERNALS__?:{invoke?:unknown}}).__TAURI_INTERNALS__;
+  return typeof internals?.invoke==='function';
+}
 function ownerIdentity(identity:string){return identity.startsWith('screen:')?identity.slice('screen:'.length):identity}
 function isSyntheticScreen(identity:string){return identity.startsWith('screen:')}
 
@@ -31,7 +35,7 @@ function pickerButton(source:NativeScreenSource,finish:(source:NativeScreenSourc
   const button=document.createElement('button');
   button.type='button';button.className='type-card native-screen-source';
   const copy=document.createElement('span');
-  const title=document.createElement('b');title.textContent=source.title|| (source.kind==='screen'?'Ekran':'Pencere');
+  const title=document.createElement('b');title.textContent=source.title||(source.kind==='screen'?'Ekran':'Pencere');
   const detail=document.createElement('small');detail.textContent=source.kind==='screen'?'Tüm ekranı paylaş':'Yalnızca bu pencereyi paylaş';
   copy.append(title,detail);button.append(copy);button.addEventListener('click',()=>finish(source));return button;
 }
@@ -63,18 +67,24 @@ async function pickNativeSource():Promise<NativeScreenSource|null>{
 
 export function useNativeScreenShare(voice:BaseVoice,onError:(message:string)=>void){
   const desktop=isTauriRuntime();
+  const participantsRaw=voice.participants??[];
+  const videoTracksRaw=voice.videoTracks??[];
+  const availableScreensRaw=voice.availableScreens??[];
+  const watchingScreensRaw=voice.watchingScreens??[];
+  const locallyMutedScreensRaw=voice.locallyMutedScreens??[];
+  const screenVolumesRaw=voice.screenVolumes??{};
   const [active,setActive]=useState(false);
   const [busy,setBusy]=useState(false);
-  const [settings,setSettings]=useState<ScreenSettings>(voice.screenSettings);
+  const [settings,setSettings]=useState<ScreenSettings>(voice.screenSettings??{height:1080,fps:60});
   const sourceRef=useRef<NativeScreenSource|null>(null);
   const settingsRef=useRef(settings);settingsRef.current=settings;
-  const localIdentity=voice.participants.find(person=>person.local)?.identity||'';
+  const localIdentity=participantsRaw.find(person=>person.local)?.identity||'';
 
   const rawForOwner=useCallback((identity:string)=>{
     const owner=ownerIdentity(identity);
-    const candidate=voice.availableScreens.find(item=>ownerIdentity(item.identity)===owner);
+    const candidate=availableScreensRaw.find(item=>ownerIdentity(item.identity)===owner);
     return candidate?.identity||identity;
-  },[voice.availableScreens]);
+  },[availableScreensRaw]);
 
   const start=useCallback(async(source:NativeScreenSource,next:ScreenSettings)=>{
     if(!voice.channelId)throw new Error('Önce bir ses kanalına bağlan.');
@@ -126,9 +136,9 @@ export function useNativeScreenShare(voice:BaseVoice,onError:(message:string)=>v
 
   useEffect(()=>{
     if(!desktop||!active||!localIdentity)return;
-    const synthetic=voice.availableScreens.find(item=>item.identity===`screen:${localIdentity}`);
-    if(synthetic&&!voice.watchingScreens.includes(synthetic.identity))voice.setScreenWatching(synthetic.identity,true);
-  },[active,desktop,localIdentity,voice.availableScreens,voice.setScreenWatching,voice.watchingScreens]);
+    const synthetic=availableScreensRaw.find(item=>item.identity===`screen:${localIdentity}`);
+    if(synthetic&&!watchingScreensRaw.includes(synthetic.identity))voice.setScreenWatching(synthetic.identity,true);
+  },[active,availableScreensRaw,desktop,localIdentity,voice.setScreenWatching,watchingScreensRaw]);
 
   useEffect(()=>{
     if(!desktop||!active)return;
@@ -137,22 +147,22 @@ export function useNativeScreenShare(voice:BaseVoice,onError:(message:string)=>v
   useEffect(()=>()=>{if(desktop)void invoke('native_screen_stop').catch(()=>undefined)},[desktop]);
 
   const participants=useMemo(()=>{
-    const synthetic=new Map(voice.participants.filter(person=>isSyntheticScreen(person.identity)).map(person=>[ownerIdentity(person.identity),person]));
-    return voice.participants.filter(person=>!isSyntheticScreen(person.identity)).map(person=>{
+    const synthetic=new Map(participantsRaw.filter(person=>isSyntheticScreen(person.identity)).map(person=>[ownerIdentity(person.identity),person]));
+    return participantsRaw.filter(person=>!isSyntheticScreen(person.identity)).map(person=>{
       const screen=synthetic.get(person.identity);
       return screen?{...person,screen:person.screen||screen.screen}:person;
     });
-  },[voice.participants]);
+  },[participantsRaw]);
 
-  const mapTrack=useCallback((item:(typeof voice.videoTracks)[number])=>{
+  const mapTrack=useCallback((item:(typeof videoTracksRaw)[number])=>{
     const identity=ownerIdentity(item.identity);
     return isSyntheticScreen(item.identity)?{...item,identity,local:identity===localIdentity}:item;
   },[localIdentity]);
-  const videoTracks=useMemo(()=>voice.videoTracks.map(mapTrack),[mapTrack,voice.videoTracks]);
-  const availableScreens=useMemo(()=>voice.availableScreens.map(mapTrack),[mapTrack,voice.availableScreens]);
-  const watchingScreens=useMemo(()=>[...new Set(voice.watchingScreens.map(ownerIdentity))],[voice.watchingScreens]);
-  const locallyMutedScreens=useMemo(()=>[...new Set(voice.locallyMutedScreens.map(ownerIdentity))],[voice.locallyMutedScreens]);
-  const screenVolumes=useMemo(()=>Object.fromEntries(Object.entries(voice.screenVolumes).map(([id,value])=>[ownerIdentity(id),value])),[voice.screenVolumes]);
+  const videoTracks=useMemo(()=>videoTracksRaw.map(mapTrack),[mapTrack,videoTracksRaw]);
+  const availableScreens=useMemo(()=>availableScreensRaw.map(mapTrack),[availableScreensRaw,mapTrack]);
+  const watchingScreens=useMemo(()=>[...new Set(watchingScreensRaw.map(ownerIdentity))],[watchingScreensRaw]);
+  const locallyMutedScreens=useMemo(()=>[...new Set(locallyMutedScreensRaw.map(ownerIdentity))],[locallyMutedScreensRaw]);
+  const screenVolumes=useMemo(()=>Object.fromEntries(Object.entries(screenVolumesRaw).map(([id,value])=>[ownerIdentity(id),value])),[screenVolumesRaw]);
 
   const setScreenWatching=useCallback((identity:string,watch:boolean)=>voice.setScreenWatching(rawForOwner(identity),watch),[rawForOwner,voice.setScreenWatching]);
   const setScreenVolume=useCallback((identity:string,value:number)=>voice.setScreenVolume(rawForOwner(identity),value),[rawForOwner,voice.setScreenVolume]);
