@@ -18,4 +18,5 @@ import './member-list-ux.css';
 import './quick-switcher.css';
 import './voice-realtime.css';
 import './mic-test.css';
+import './release-1.9.10-ui.css';
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /><GlobalUserContext /><SidebarInteractions /><VoiceSlotGuard /><DomIdentityBridge /><MemberListUX /><QuickSwitcher /><MicrophoneTestSettingsBridge /></React.StrictMode>);
