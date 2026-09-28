@@ -21,6 +21,10 @@ export class VoiceService {
     return `shakechat-${channelId}`;
   }
 
+  screenIdentity(userId: string) {
+    return `screen:${userId}`;
+  }
+
   private rosterCache = new Map<string, { expires: number; value: Promise<{ identity: string; name: string; muted: boolean; screen: boolean }[]> }>();
 
   async participantsInServer(userId: string, serverId: string) {
@@ -32,13 +36,24 @@ export class VoiceService {
       const room = this.roomName(channel.id);
       let cached = this.rosterCache.get(room);
       if (!cached || cached.expires < Date.now()) {
-        // Bound memory and coalesce concurrent viewers' requests without caching permissions.
         for (const [key, value] of this.rosterCache) if (value.expires < Date.now()) this.rosterCache.delete(key);
-        const value = this.roomClient.listParticipants(room).then(participants => participants.map(participant => ({
-          identity: participant.identity, name: participant.name || participant.identity,
-          muted: !participant.tracks.some(track => track.source === TrackSource.MICROPHONE && !track.muted),
-          screen: participant.tracks.some(track => track.source === TrackSource.SCREEN_SHARE && !track.muted),
-        }))).catch(error => {
+        const value = this.roomClient.listParticipants(room).then(participants => {
+          const merged = new Map<string, { identity: string; name: string; muted: boolean; screen: boolean }>();
+          for (const participant of participants) {
+            const syntheticScreen = participant.identity.startsWith('screen:');
+            const identity = syntheticScreen ? participant.identity.slice('screen:'.length) : participant.identity;
+            const current = merged.get(identity);
+            const screen = participant.tracks.some(track => track.source === TrackSource.SCREEN_SHARE && !track.muted);
+            const microphoneActive = participant.tracks.some(track => track.source === TrackSource.MICROPHONE && !track.muted);
+            merged.set(identity, {
+              identity,
+              name: participant.name || current?.name || identity,
+              muted: syntheticScreen ? (current?.muted ?? true) : !microphoneActive,
+              screen: Boolean(current?.screen || screen),
+            });
+          }
+          return [...merged.values()];
+        }).catch(error => {
           this.rosterCache.delete(room);
           if (error?.code === 'not_found' || error?.status === 404) return [];
           throw error;
@@ -52,13 +67,11 @@ export class VoiceService {
     return { channels: rows };
   }
 
-  async createJoinToken(userId: string, channelId: string) {
+  private async voiceContext(userId: string, channelId: string) {
     const channel = await this.permissions.channelContext(channelId);
     if (channel.type !== 'VOICE') throw new NotFoundException('Ses kanalı bulunamadı.');
-
     await this.permissions.require(userId, channel.serverId, Permission.VIEW_CHANNEL, channelId, 'Bu ses kanalını göremezsin.');
     await this.permissions.require(userId, channel.serverId, Permission.CONNECT_VOICE, channelId, 'Bu ses kanalına bağlanma yetkin yok.');
-
     const effective = await this.permissions.effective(userId, channel.serverId, channelId);
     const canSpeak = effective.includes(Permission.ADMINISTRATOR) || effective.includes(Permission.SPEAK);
     const user = await this.prisma.user.findUnique({
@@ -66,7 +79,11 @@ export class VoiceService {
       select: { id: true, username: true, displayName: true },
     });
     if (!user) throw new ForbiddenException('Kullanıcı bulunamadı.');
+    return { channel, user, canSpeak };
+  }
 
+  async createJoinToken(userId: string, channelId: string) {
+    const { user, canSpeak } = await this.voiceContext(userId, channelId);
     const room = this.roomName(channelId);
     const token = new AccessToken(this.apiKey, this.apiSecret, {
       identity: user.id,
@@ -80,14 +97,28 @@ export class VoiceService {
       canPublish: canSpeak,
       canPublishData: true,
     });
+    return { token: await token.toJwt(), url: this.publicUrl, room, channelId, canSpeak };
+  }
 
-    return {
-      token: await token.toJwt(),
-      url: this.publicUrl,
+  async createScreenToken(userId: string, channelId: string) {
+    const { user, canSpeak } = await this.voiceContext(userId, channelId);
+    if (!canSpeak) throw new ForbiddenException('Bu ses kanalında yayın açma yetkin yok.');
+    const room = this.roomName(channelId);
+    const identity = this.screenIdentity(user.id);
+    const token = new AccessToken(this.apiKey, this.apiSecret, {
+      identity,
+      name: user.displayName || user.username,
+      metadata: JSON.stringify({ kind: 'screen', ownerId: user.id }),
+      ttl: '15m',
+    });
+    token.addGrant({
+      roomJoin: true,
       room,
-      channelId,
-      canSpeak,
-    };
+      canSubscribe: false,
+      canPublishData: false,
+      canPublishSources: [TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO],
+    });
+    return { token: await token.toJwt(), url: this.publicUrl, room, channelId, ownerId: user.id, identity };
   }
 
   async refreshServerAccess(serverId: string, userIds: string[]) {
@@ -102,17 +133,19 @@ export class VoiceService {
       try {
         const canConnect = await this.permissions.has(userId, serverId, Permission.CONNECT_VOICE, channel.id);
         if (!canConnect) {
-          await this.roomClient.removeParticipant(room, userId, { revokeTokenTs: BigInt(Math.floor(Date.now() / 1000)) });
+          await Promise.allSettled([
+            this.roomClient.removeParticipant(room, userId, { revokeTokenTs: BigInt(Math.floor(Date.now() / 1000)) }),
+            this.roomClient.removeParticipant(room, this.screenIdentity(userId), { revokeTokenTs: BigInt(Math.floor(Date.now() / 1000)) }),
+          ]);
           return;
         }
         const canSpeak = await this.permissions.has(userId, serverId, Permission.SPEAK, channel.id);
         await this.roomClient.updateParticipant(room, userId, {
-          permission: {
-            canSubscribe: true,
-            canPublish: canSpeak,
-            canPublishData: true,
-          },
+          permission: { canSubscribe: true, canPublish: canSpeak, canPublishData: true },
         });
+        if (!canSpeak) {
+          await this.roomClient.removeParticipant(room, this.screenIdentity(userId), { revokeTokenTs: BigInt(Math.floor(Date.now() / 1000)) }).catch(() => undefined);
+        }
       } catch {
         // Room or participant may not currently exist. The next join token is still authoritative.
       }
@@ -125,13 +158,11 @@ export class VoiceService {
       select: { id: true },
     });
     await Promise.all(channels.map(async channel => {
-      try {
-        await this.roomClient.removeParticipant(this.roomName(channel.id), userId, {
-          revokeTokenTs: BigInt(Math.floor(Date.now() / 1000)),
-        });
-      } catch {
-        // Not being connected to this voice room is already the desired state.
-      }
+      const room = this.roomName(channel.id);
+      await Promise.allSettled([
+        this.roomClient.removeParticipant(room, userId, { revokeTokenTs: BigInt(Math.floor(Date.now() / 1000)) }),
+        this.roomClient.removeParticipant(room, this.screenIdentity(userId), { revokeTokenTs: BigInt(Math.floor(Date.now() / 1000)) }),
+      ]);
     }));
   }
 
