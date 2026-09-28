@@ -1,4 +1,4 @@
-name: Web Deploy
+name: Web and API Deploy
 
 on:
   push:
@@ -8,13 +8,16 @@ on:
 
 concurrency:
   group: web-deploy-production
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    if: github.ref == 'refs/heads/release/updater-test'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - uses: actions/checkout@v4
+
       - name: Verify deploy key
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SHAKECHAT_VPS_SSH_KEY }}
@@ -34,50 +37,12 @@ jobs:
           ssh-keyscan -H 146.59.105.92 >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Deploy web build from the exact release commit
+      - name: Deploy web and API from the exact release commit
         env:
           RELEASE_SHA: ${{ github.sha }}
         run: |
           ssh -i ~/.ssh/shakechat_deploy_ed25519 -o IdentitiesOnly=yes ubuntu@146.59.105.92 \
-            "RELEASE_SHA='$RELEASE_SHA' bash -s" <<'REMOTE'
-          set -Eeuo pipefail
-
-          ROOT=/opt/shake/shakechat
-          BACKUP_ROOT=/opt/shake/backups
-          STAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
-          BACKUP="$BACKUP_ROOT/shakechat-web-$STAMP"
-
-          cd "$ROOT"
-          mkdir -p "$BACKUP_ROOT"
-
-          restore_previous() {
-            code=$?
-            trap - ERR
-            echo "Web deploy failed; restoring previous dist."
-            if [ -d "$BACKUP" ]; then
-              rm -rf apps/web/dist
-              cp -a "$BACKUP" apps/web/dist
-            fi
-            exit "$code"
-          }
-          trap restore_previous ERR
-
-          if [ -d apps/web/dist ]; then
-            cp -a apps/web/dist "$BACKUP"
-          fi
-
-          git fetch --prune origin
-          git checkout -B release/updater-test "$RELEASE_SHA"
-          git reset --hard "$RELEASE_SHA"
-
-          npm install
-          VITE_API_ORIGIN=https://chat.shakethat.com.tr npm run build -w @shakechat/web
-          printf '%s\n' "$RELEASE_SHA" > apps/web/dist/version.txt
-          test -s apps/web/dist/index.html
-
-          trap - ERR
-          echo "Web deploy complete: $RELEASE_SHA"
-          REMOTE
+            "RELEASE_SHA='$RELEASE_SHA' bash -s" < tools/deploy-release.sh
 
       - name: Verify public site
         env:

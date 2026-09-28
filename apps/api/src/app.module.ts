@@ -10,8 +10,10 @@ import { FriendsModule } from './friends/friends.module';
 import { DirectMessagesModule } from './direct-messages/direct-messages.module';
 import { PermissionsModule } from './permissions/permissions.module';
 import { VoiceModule } from './voice/voice.module';
+import { HealthController } from './health.controller';
 
 @Module({
+  controllers: [HealthController],
   imports: [
     PrismaModule,
     JwtModule.register({

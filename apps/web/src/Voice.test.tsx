@@ -143,3 +143,22 @@ it('offers independent stream volume and mute directly on a remote screen tile',
   expect(voice.toggleParticipantLocalMute).not.toHaveBeenCalled();
   expect(screen.queryByRole('button',{name:'Izgaraya dön'})).toBeNull();
 });
+
+it('shows an unwatched stream as a watch button without attaching its video',async()=>{
+  const user=userEvent.setup(),attach=vi.fn(),setScreenWatching=vi.fn();
+  const item={id:'screen',identity:'bob',name:'Bob',local:false,source:'screen',publication:{videoTrack:{attach,detach:vi.fn()}}};
+  const voice=voiceState({availableScreens:[item],watchingScreens:[],setScreenWatching});
+  const {container}=render(<VoicePanel channelId="voice" channelName="General" voice={voice as any}/>);
+  expect(container.querySelector('video')).toBeNull();expect(attach).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('button',{name:'Yayını izle'}));
+  expect(setScreenWatching).toHaveBeenCalledWith('bob',true);
+});
+
+it('exposes live quality and source controls only on the local stream',async()=>{
+  const user=userEvent.setup(),changeScreenSettings=vi.fn(),changeScreenSource=vi.fn();
+  const voice=voiceState({screenSettings:{height:1080,fps:60},screenBusy:false,screenViewers:[],changeScreenSettings,changeScreenSource,videoTracks:[{id:'screen',identity:'alice',name:'Alice',local:true,source:'screen',publication:{videoTrack:{attach:vi.fn(),detach:vi.fn()}}}]});
+  render(<VoicePanel channelId="voice" channelName="General" voice={voice as any}/>);
+  await user.selectOptions(screen.getByLabelText('Yayın FPS'),'30');expect(changeScreenSettings).toHaveBeenCalledWith({height:1080,fps:30});
+  await user.selectOptions(screen.getByLabelText('Yayın çözünürlüğü'),'720');expect(changeScreenSettings).toHaveBeenCalledWith({height:720,fps:60});
+  await user.click(screen.getByRole('button',{name:'Ekranı / pencereyi değiştir'}));expect(changeScreenSource).toHaveBeenCalledOnce();
+});

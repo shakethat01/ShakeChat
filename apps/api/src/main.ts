@@ -3,21 +3,7 @@ import 'reflect-metadata';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-
-function allowedOrigins() {
-  const configured = (process.env.WEB_ORIGIN ?? 'http://localhost:5173')
-    .split(',')
-    .map(value => value.trim())
-    .filter(Boolean);
-  return [...new Set([
-    ...configured,
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-    'tauri://localhost',
-    'http://tauri.localhost',
-    'https://tauri.localhost',
-  ])];
-}
+import { allowedOrigins } from './cors';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);

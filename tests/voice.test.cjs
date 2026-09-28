@@ -59,3 +59,25 @@ test('SPEAK change updates LiveKit publish permission without disconnecting',asy
   assert.equal(calls.updated.length,1);
   assert.equal(calls.updated[0].options.permission.canPublish,false);
 });
+
+test('channel roster checks membership and VIEW_CHANNEL before querying LiveKit, even with cached rooms',async()=>{
+  const {service}=fixture();const queried=[];
+  service.prisma.serverMember={findUnique:async({where})=>where.serverId_userId.userId==='outsider'?null:{id:'member'}};
+  service.prisma.channel.findMany=async()=>[{id:'visible'},{id:'hidden'}];
+  service.permissions.has=async(_user,_server,_permission,channel)=>channel==='visible';
+  service.roomClient.listParticipants=async room=>{queried.push(room);return[{identity:'bob',name:'Bob',tracks:[]}]};
+  await assert.rejects(()=>service.participantsInServer('outsider','friends'),/göremezsin/);assert.equal(queried.length,0);
+  const first=await service.participantsInServer('alice','friends');
+  assert.deepEqual(first.channels.map(row=>row.channelId),['visible']);assert.equal(first.channels[0].participants[0].identity,'bob');
+  assert.deepEqual(queried,['shakechat-visible']);
+  service.permissions.has=async()=>false;
+  assert.deepEqual((await service.participantsInServer('alice','friends')).channels,[]);assert.equal(queried.length,1);
+});
+
+test('roster distinguishes an empty room from a temporary LiveKit failure',async()=>{
+  const {service}=fixture();service.prisma.serverMember={findUnique:async()=>({id:'member'})};
+  service.roomClient.listParticipants=async()=>{throw Object.assign(new Error('no room'),{code:'not_found'})};
+  assert.equal((await service.participantsInServer('alice','friends')).channels[0].available,true);
+  service.rosterCache.clear();service.roomClient.listParticipants=async()=>{throw new Error('network')};
+  assert.equal((await service.participantsInServer('alice','friends')).channels[0].available,false);
+});

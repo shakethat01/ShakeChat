@@ -2,7 +2,8 @@ import { Body, Controller, Delete, Get, Param, Post, Query, Req, UseGuards } fro
 import { AuthGuard } from '../auth/auth.guard';
 import { MessagesGateway } from '../messages/messages.gateway';
 import { MessagesService } from '../messages/messages.service';
-import { BanServerMemberDto, CreateServerDto, RestrictServerMemberDto } from './dto';
+import { BanServerMemberDto, CreateServerDto, RestrictServerMemberDto, TransferServerDto, DeleteServerDto } from './dto';
+import { StorageService } from '../messages/storage.service';
 import { ServersService } from './servers.service';
 
 @UseGuards(AuthGuard)
@@ -12,6 +13,7 @@ export class ServersController {
     private readonly servers: ServersService,
     private readonly gateway: MessagesGateway,
     private readonly messages: MessagesService,
+    private readonly storage: StorageService,
   ) {}
 
   @Get()
@@ -19,6 +21,22 @@ export class ServersController {
 
   @Post()
   create(@Req() req: any, @Body() dto: CreateServerDto) { return this.servers.create(req.user.sub, dto.name); }
+
+  @Post(':serverId/ownership')
+  async transfer(@Req() req: any, @Param('serverId') serverId: string, @Body() dto: TransferServerDto) {
+    const result = await this.servers.transferOwnership(req.user.sub, serverId, dto.userId);
+    await this.gateway.refreshServerAccess(serverId, [req.user.sub, dto.userId]);
+    this.gateway.emitMembershipChanged(serverId);
+    return result;
+  }
+
+  @Delete(':serverId')
+  async deleteServer(@Req() req: any, @Param('serverId') serverId: string, @Body() dto: DeleteServerDto) {
+    const removed = await this.servers.deleteServer(req.user.sub, serverId, dto.confirmationName);
+    await this.gateway.removeDeletedServer(serverId, removed.channelIds, removed.userIds);
+    await Promise.allSettled(removed.objectKeys.map(key => this.storage.remove(key)));
+    return { ok: true };
+  }
 
   @Get(':serverId/unreads')
   unreads(@Req() req:any,@Param('serverId') serverId:string){ return this.messages.unreads(req.user.sub,serverId); }

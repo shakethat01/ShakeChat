@@ -29,6 +29,8 @@ export type ServerAuditAction = 'MEMBER_KICKED'|'MEMBER_BANNED'|'MEMBER_UNBANNED
 export type ServerAuditLog = { id:string; serverId:string; actorId?:string|null; targetUserId?:string|null; actorName:string; targetName:string; action:ServerAuditAction; reason?:string|null; createdAt:string };
 export type ChannelPermissionOverride = { role:Role; allow:Permission[]; deny:Permission[] };
 export type VoiceToken = { token:string; url:string; room:string; channelId:string; canSpeak:boolean };
+export type VoiceRosterMember = { identity:string; name:string; muted:boolean; screen:boolean };
+export type VoiceRosterChannel = { channelId:string; participants:VoiceRosterMember[]; available:boolean };
 export type UnreadSummary = { channelId:string; count:number; mentions:number };
 export type SearchMessageResult = { id:string; channelId:string; content:string; createdAt:string; author:User; channel:{id:string;name:string;groupName?:string|null} };
 
@@ -43,6 +45,9 @@ async function request<T>(path:string,init:RequestInit={}){
   const r=await fetch(`${API}${path}`,{...init,headers});if(!r.ok)await throwApiError(r);if(r.status===204)return undefined as T;return r.json() as Promise<T>;
 }
 export const api={
+  transferServerOwnership:(serverId:string,userId:string)=>request<{ok:boolean;ownerId:string}>(`/servers/${serverId}/ownership`,{method:'POST',body:JSON.stringify({userId})}),
+  deleteServer:(serverId:string,confirmationName:string)=>request<{ok:boolean}>(`/servers/${serverId}`,{method:'DELETE',body:JSON.stringify({confirmationName})}),
+  voiceRoster:(serverId:string,signal?:AbortSignal)=>request<{channels:VoiceRosterChannel[]}>(`/voice/servers/${serverId}/participants`,{signal}),
   me:()=>request<User>('/auth/me'),
   updateMe:(data:{displayName?:string;avatarUrl?:string;statusText?:string;profileMode?:ProfileMode})=>request<User>('/auth/me',{method:'PATCH',body:JSON.stringify(data)}),
   privacy:()=>request<PrivacySettings>('/auth/privacy'),

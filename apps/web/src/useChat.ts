@@ -7,7 +7,7 @@ export function mergeMessages(current: Message[], incoming: Message[]) {
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
 }
 
-export function useChat(authed: boolean, serverId: string, channelId: string, userId: string, onError: (error: string) => void, onServerRemoved?: (serverId: string, reason: 'left' | 'kicked' | 'banned') => void, onPermissionsChanged?: (serverId: string) => void) {
+export function useChat(authed: boolean, serverId: string, channelId: string, userId: string, onError: (error: string) => void, onServerRemoved?: (serverId: string, reason: 'left' | 'kicked' | 'banned' | 'deleted') => void, onPermissionsChanged?: (serverId: string) => void) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [typingUsers, setTypingUsers] = useState<Record<string, { username: string; expires: number }>>({});
@@ -91,10 +91,11 @@ export function useChat(authed: boolean, serverId: string, channelId: string, us
       if (data.serverId !== serverId) return;
       setMembers(previous => previous.some(member => member.id === data.member.id) ? previous.map(member => member.id === data.member.id ? data.member : member) : [...previous, data.member]);
     };
+    const membersChanged = (data: { serverId: string }) => { if (data.serverId === serverId) sync(); };
     const memberRemoved = (data: { serverId: string; userId: string }) => {
       if (data.serverId === serverId) setMembers(previous => previous.filter(member => member.id !== data.userId));
     };
-    const serverRemoved = (data: { serverId: string; reason: 'left' | 'kicked' | 'banned' }) => {
+    const serverRemoved = (data: { serverId: string; reason: 'left' | 'kicked' | 'banned' | 'deleted' }) => {
       if (data.serverId === serverId) {
         setMessages([]); setMembers([]); setTypingUsers({});
       }
@@ -116,7 +117,8 @@ export function useChat(authed: boolean, serverId: string, channelId: string, us
     };
     socket.on('connect', sync); socket.on('disconnect', disconnect); socket.on('connect_error', connectionError);
     socket.on('message:new', received); socket.on('message:updated', updated); socket.on('message:deleted', deleted); socket.on('typing', typing); socket.on('presence:update', presence);
-    socket.on('member:joined', memberJoined); socket.on('member:removed', memberRemoved); socket.on('server:removed', serverRemoved); socket.on('permissions:changed', permissionsChanged); socket.on('channel:removed', channelRemoved); socket.on('channel:updated', channelUpdated);
+    socket.on('member:joined', memberJoined);
+    socket.on('members:changed', membersChanged); socket.on('member:removed', memberRemoved); socket.on('server:removed', serverRemoved); socket.on('permissions:changed', permissionsChanged); socket.on('channel:removed', channelRemoved); socket.on('channel:updated', channelUpdated);
     if (socket.connected) sync(); else socket.connect();
     const expiry = setInterval(() => setTypingUsers(previous => {
       const entries = Object.entries(previous).filter(([, value]) => value.expires > Date.now());
@@ -127,7 +129,8 @@ export function useChat(authed: boolean, serverId: string, channelId: string, us
       if (socket.connected) socket.emit('typing', { channelId, typing: false });
       socket.off('connect', sync); socket.off('disconnect', disconnect); socket.off('connect_error', connectionError);
       socket.off('message:new', received); socket.off('message:updated', updated); socket.off('message:deleted', deleted); socket.off('typing', typing); socket.off('presence:update', presence);
-      socket.off('member:joined', memberJoined); socket.off('member:removed', memberRemoved); socket.off('server:removed', serverRemoved); socket.off('permissions:changed', permissionsChanged); socket.off('channel:removed', channelRemoved); socket.off('channel:updated', channelUpdated);
+      socket.off('member:joined', memberJoined);
+      socket.off('members:changed', membersChanged); socket.off('member:removed', memberRemoved); socket.off('server:removed', serverRemoved); socket.off('permissions:changed', permissionsChanged); socket.off('channel:removed', channelRemoved); socket.off('channel:updated', channelUpdated);
     };
   }, [authed, serverId, channelId, userId]);
 

@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { Camera, CameraOff, Focus, Grid2X2, Headphones, Maximize2, Mic, MicOff, MonitorUp, PhoneOff, Radio, ScreenShareOff, Volume2, VolumeX } from 'lucide-react';
 import { VoiceParticipant, VoiceVideoTrack } from './useVoice';
+import { StreamStats } from './streamStats';
+import { SCREEN_HEIGHTS, SCREEN_FRAME_RATES, type ScreenSettings } from './screenShareControl';
 import { VoiceInputMode, pushToTalkKeyLabel } from './preferences';
 
 type VoiceState = {
@@ -9,6 +11,14 @@ type VoiceState = {
   channelId:string;
   participants:VoiceParticipant[];
   videoTracks:VoiceVideoTrack[];
+  availableScreens:VoiceVideoTrack[];
+  watchingScreens:string[];
+  screenSettings:ScreenSettings;
+  screenBusy:boolean;
+  screenViewers:string[];
+  setScreenWatching:(identity:string,watch:boolean)=>void;
+  changeScreenSettings:(settings:ScreenSettings)=>Promise<void>;
+  changeScreenSource:()=>Promise<void>;
   muted:boolean;
   deafened:boolean;
   cameraEnabled:boolean;
@@ -67,44 +77,34 @@ function VideoTile({item,featured,onToggleFeature,voice}:{item:VoiceVideoTrack;f
     track.attach(element);
     // Audio has one dedicated playback path with source-specific controls.
     element.muted = true;
+    const sampler=new StreamStats();
+    let renderedFrames=0,frameHandle:number|undefined,lastFrameCount=0,lastFrameTime=performance.now();
+    const frame=()=>{renderedFrames+=1;if(!stopped)frameHandle=element.requestVideoFrameCallback?.(frame)};
+    if(typeof element.requestVideoFrameCallback==='function')frameHandle=element.requestVideoFrameCallback(frame);
+    let updating=false;
     const updateMetrics=async()=>{
-      let width=0,height=0,fps=0,bitrate=0,limit='';
+      if(updating)return;updating=true;
       try{
-        const report=await track.getRTCStatsReport?.();
-        let best:any;
-        report?.forEach((stat:any)=>{
-          const video=(stat.kind==='video'||stat.mediaType==='video'||(!stat.kind&&!stat.mediaType));
-          const wanted=item.local?stat.type==='outbound-rtp':stat.type==='inbound-rtp';
-          if(!wanted||stat.isRemote||!video)return;
-          const area=(Number(stat.frameWidth)||0)*(Number(stat.frameHeight)||0);
-          const bestArea=(Number(best?.frameWidth)||0)*(Number(best?.frameHeight)||0);
-          if(!best||area>=bestArea)best=stat;
-        });
-        if(best){
-          width=Math.round(Number(best.frameWidth)||0);
-          height=Math.round(Number(best.frameHeight)||0);
-          fps=Math.round(Number(best.framesPerSecond)||0);
-          bitrate=Math.round((Number(track.currentBitrate)||0)/1000);
-          limit=typeof best.qualityLimitationReason==='string'&&best.qualityLimitationReason!=='none'?best.qualityLimitationReason:'';
+        const value=sampler.sample(await track.getRTCStatsReport?.(),item.local);
+        const capture=item.local?track.mediaStreamTrack?.getSettings?.():undefined;
+        const parts:string[]=[];
+        const size=value.width&&value.height?`${value.width}×${value.height}`:'ölçülüyor';
+        parts.push(`${item.local?'Gönderim':'Alım'}: ${size}${value.fps===undefined?'':` · ${value.fps} FPS`}`);
+        if(item.local&&capture?.frameRate!==undefined)parts.push(`Yakalama: ${Math.round(capture.frameRate)} FPS`);
+        if(!item.local&&typeof element.requestVideoFrameCallback==='function'){
+          const now=performance.now();const seconds=(now-lastFrameTime)/1000;
+          if(seconds>=0.5){parts.push(`Görüntü: ${Math.round((renderedFrames-lastFrameCount)/seconds)} FPS`);lastFrameCount=renderedFrames;lastFrameTime=now}
         }
-      }catch{/* Stats are best-effort and browser dependent. */}
-      if(!width||!height){
-        const settings=track.mediaStreamTrack?.getSettings?.();
-        width=Math.round(settings?.width||item.publication.dimensions?.width||0);
-        height=Math.round(settings?.height||item.publication.dimensions?.height||0);
-        fps=fps||Math.round(settings?.frameRate||0);
-      }
-      if(stopped)return;
-      const parts=[];
-      if(width&&height)parts.push(`${width}×${height}${fps?` · ${fps} FPS`:''}`);
-      if(bitrate)parts.push(`${bitrate>=1000?(bitrate/1000).toFixed(1)+' Mbps':bitrate+' kbps'}`);
-      if(limit)parts.push(`sınır: ${limit}`);
-      setMetrics(parts.join(' · '));
+        if(value.kbps!==undefined)parts.push(`${(value.kbps/1000).toFixed(1)} Mbps`);
+        if(value.limitation)parts.push(`Sınır: ${value.limitation==='cpu'?'işlemci':value.limitation==='bandwidth'?'bağlantı':value.limitation}`);
+        if(!stopped)setMetrics(parts.join(' · '));
+      }catch{if(!stopped)setMetrics('Yayın ölçümü bekleniyor…')}
+      finally{updating=false}
     };
     void updateMetrics();
     const timer=window.setInterval(()=>void updateMetrics(),1000);
-    return()=>{stopped=true;window.clearInterval(timer);try{track.detach(element)}catch{/* Track may already be unpublished. */}};
-  },[item.publication,item.local]);
+    return()=>{stopped=true;window.clearInterval(timer);if(frameHandle!==undefined)element.cancelVideoFrameCallback?.(frameHandle);try{track.detach(element)}catch{/* Track may already be unpublished. */}};
+  },[item.publication,item.local,item.publication.videoTrack]);
 
   async function fullscreen(){
     const shell=shellRef.current;
@@ -116,29 +116,37 @@ function VideoTile({item,featured,onToggleFeature,voice}:{item:VoiceVideoTrack;f
   }
 
   function tileClick(event:MouseEvent<HTMLDivElement>){
-    if((event.target as HTMLElement).closest('button,input,label'))return;
+    if((event.target as HTMLElement).closest('button,input,label,select'))return;
     if(clickTimer.current!==null)window.clearTimeout(clickTimer.current);
     clickTimer.current=window.setTimeout(()=>{clickTimer.current=null;onToggleFeature()},220);
   }
 
   function tileDoubleClick(event:MouseEvent<HTMLDivElement>){
-    if((event.target as HTMLElement).closest('button,input,label'))return;
+    if((event.target as HTMLElement).closest('button,input,label,select'))return;
     if(clickTimer.current!==null){window.clearTimeout(clickTimer.current);clickTimer.current=null}
     void fullscreen();
   }
 
   return <div ref={shellRef} className={`video-tile ${item.source==='screen'?'screen':''} ${featured?'featured':''}`} onClick={tileClick} onDoubleClick={tileDoubleClick}>
     <video ref={ref} autoPlay playsInline muted/>
+    {item.source==='screen'&&item.local&&voice.screenSettings&&<div className="live-publish-controls" onClick={event=>event.stopPropagation()} onDoubleClick={event=>event.stopPropagation()}>
+      <label>Çözünürlük<select aria-label="Yayın çözünürlüğü" disabled={voice.screenBusy} value={voice.screenSettings.height} onChange={event=>void voice.changeScreenSettings({...voice.screenSettings,height:Number(event.target.value)})}>{SCREEN_HEIGHTS.map(height=><option key={height} value={height}>{height}p</option>)}</select></label>
+      <label>FPS<select aria-label="Yayın FPS" disabled={voice.screenBusy} value={voice.screenSettings.fps} onChange={event=>void voice.changeScreenSettings({...voice.screenSettings,fps:Number(event.target.value)})}>{SCREEN_FRAME_RATES.map(fps=><option key={fps} value={fps}>{fps}</option>)}</select></label>
+      <button type="button" disabled={voice.screenBusy||voice.microphoneTestActive} onClick={()=>void voice.changeScreenSource()}>Ekranı / pencereyi değiştir</button>
+      <small>{voice.screenBusy?'Uygulanıyor…':`${voice.screenViewers?.length??0} izleyici`}</small>
+    </div>}
+
     {item.source==='screen'&&!item.local&&<div className="screen-audio-controls" onClick={event=>event.stopPropagation()} onDoubleClick={event=>event.stopPropagation()}>
       <button type="button" aria-label={`${item.name} yayın sesini ${voice.locallyMutedScreens?.includes(item.identity)?'aç':'kapat'}`} onClick={()=>voice.toggleScreenLocalMute(item.identity)}>{voice.locallyMutedScreens?.includes(item.identity)?<VolumeX size={16}/>:<Volume2 size={16}/>}</button>
       <label>Yayın sesi<input aria-label={`${item.name} yayın ses seviyesi`} type="range" min="0" max="100" step="5" value={voice.screenVolumes?.[item.identity]??100} onChange={event=>voice.setScreenVolume(item.identity,Number(event.target.value))}/></label>
       <small>{voice.locallyMutedScreens?.includes(item.identity)?'Sessiz':`${voice.screenVolumes?.[item.identity]??100}%`}</small>
     </div>}
     <div className="video-tile-actions">
+      {item.source==='screen'&&!item.local&&<button type="button" onClick={event=>{event.stopPropagation();voice.setScreenWatching(item.identity,false)}}>İzlemeyi bırak</button>}
       <button type="button" aria-label={`${item.name} görüntüsünü ${featured?'ızgaraya döndür':'öne çıkar'}`} title={featured?'Izgaraya döndür':'Öne çıkar'} onClick={e=>{e.stopPropagation();onToggleFeature()}}>{featured?<Grid2X2 size={15}/>:<Focus size={15}/>}</button>
       <button type="button" aria-label={`${item.name} görüntüsünü tam ekran yap`} title="Tam ekran" onClick={e=>{e.stopPropagation();void fullscreen()}}><Maximize2 size={15}/></button>
     </div>
-    <div className="video-label"><span>{item.source==='screen'?<MonitorUp size={14}/>:<Camera size={14}/>}</span><span>{item.name}{item.local?' · Sen':''}{item.source==='screen'?' · Ekran':''}</span>{item.source==='screen'&&<span className="video-live-badge"><Radio size={11}/> CANLI</span>}{metrics&&<small className="video-metrics">{metrics}</small>}</div>
+    <div className="video-label"><span>{item.source==='screen'?<MonitorUp size={14}/>:<Camera size={14}/>}</span><span>{item.name}{item.local?' · Sen':''}{item.source==='screen'?' · Ekran':''}</span>{item.source==='screen'&&<span className="video-live-badge"><Radio size={11}/> CANLI</span>}{item.source==='screen'&&item.local&&voice.screenSettings&&<small>Hedef: {voice.screenSettings.height}p · {voice.screenSettings.fps} FPS</small>}{metrics&&<small className="video-metrics" title="FPS anlık ölçülür. Sabit görüntüde daha az kare gönderilebilir; hedef değer donanım ve bağlantıya göre sınırlanabilir.">{metrics}</small>}</div>
   </div>;
 }
 
@@ -176,17 +184,20 @@ function VoiceMemberList({voice,embedded=false}:{voice:VoiceState;embedded?:bool
   })}</div>;
 }
 
-export function VoicePanel({channelId,channelName,voice}:{channelId:string;channelName:string;voice:VoiceState}){
+export function VoicePanel({channelId,channelName,voice,onJoin}:{channelId:string;channelName:string;voice:VoiceState;onJoin?:()=>void}){
   const [featuredId,setFeaturedId]=useState('');
   const active=voice.channelId===channelId&&voice.status!=='disconnected';
   useEffect(()=>{if(featuredId&&!voice.videoTracks.some(track=>track.id===featuredId))setFeaturedId('')},[featuredId,voice.videoTracks]);
-  if(!active)return <div className="voice-stage empty"><Volume2 size={46}/><h2>{channelName}</h2><p>Bu ses kanalına katılarak arkadaşlarınla konuşabilir, kamera veya ekran paylaşabilirsin.</p><button className="primary voice-join" onClick={()=>void voice.join(channelId)} disabled={voice.status==='connecting'}>{voice.status==='connecting'?'Bağlanıyor…':'Ses kanalına katıl'}</button></div>;
+  if(!active)return <div className="voice-stage empty"><Volume2 size={46}/><h2>{channelName}</h2><p>Bu ses kanalına katılarak arkadaşlarınla konuşabilir, kamera veya ekran paylaşabilirsin.</p><button className="primary voice-join" onClick={()=>onJoin?onJoin():void voice.join(channelId)} disabled={voice.status==='connecting'}>{voice.status==='connecting'?'Bağlanıyor…':'Ses kanalına katıl'}</button></div>;
   const screens=voice.videoTracks.filter(track=>track.source==='screen');
   const cameras=voice.videoTracks.filter(track=>track.source==='camera');
   const liveCount=voice.participants.filter(person=>person.screen).length;
   const videos=[...screens,...cameras].sort((a,b)=>Number(b.id===featuredId)-Number(a.id===featuredId));
   return <div className="voice-stage">
     <div className="voice-hero"><div><span className={`voice-status-dot ${voice.status==='connected'?'on':''}`}/><small>{voice.status==='reconnecting'?'Yeniden bağlanıyor':'SES & VİDEO BAĞLANTISI'}</small><h2>{channelName}</h2><p>{voice.participants.length} kişi bağlı{liveCount?` · ${liveCount} yayın canlı`:voice.videoTracks.length?` · ${voice.videoTracks.length} görüntü`:''}</p></div><button className="danger-btn" onClick={()=>void voice.leave()}><PhoneOff size={18}/> Bağlantıyı kes</button></div>
+
+    {(voice.availableScreens??[]).some(item=>!item.local&&!voice.watchingScreens?.includes(item.identity))&&<div className="available-streams" aria-label="İzlenebilir yayınlar">{(voice.availableScreens??[]).filter(item=>!item.local&&!voice.watchingScreens?.includes(item.identity)).map(item=><div className="available-stream" key={item.id}><MonitorUp size={22}/><div><b>{item.name}</b><small>Ekran paylaşıyor</small></div><button type="button" className="primary compact" onClick={()=>voice.setScreenWatching(item.identity,true)}>Yayını izle</button></div>)}</div>}
+    {(voice.availableScreens??[]).filter(item=>!item.local&&voice.watchingScreens?.includes(item.identity)&&!voice.videoTracks.some(track=>track.id===item.id)).map(item=><div className="stream-connecting" role="status" key={item.id}>{item.name} · Yayına bağlanılıyor… <button type="button" onClick={()=>voice.setScreenWatching(item.identity,false)}>İzlemeyi bırak</button></div>)}
 
     {voice.videoTracks.length>0&&<>
       <div className="stream-toolbar"><div><Radio size={15}/><span><b>CANLI YAYINLAR</b><small>{screens.length?`${screens.length} ekran paylaşımı`:''}{screens.length&&cameras.length?' · ':''}{cameras.length?`${cameras.length} kamera`:''}</small></span></div>{featuredId&&<button type="button" onClick={()=>setFeaturedId('')}><Grid2X2 size={14}/> Izgaraya dön</button>}</div>
@@ -204,7 +215,7 @@ export function VoicePanel({channelId,channelName,voice}:{channelId:string;chann
       <button className={voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?'control media-on':'control active'):(voice.muted?'control active':'control')} disabled={!voice.canSpeak} onClick={()=>void voice.toggleMute()}>{voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?<Mic size={20}/>:<MicOff size={20}/>):voice.muted?<MicOff size={20}/>:<Mic size={20}/>}<span>{!voice.canSpeak?'Konuşma yetkisi yok':voice.inputMode==='push_to_talk'?(voice.pushToTalkActive?'Konuşuyorsun':pttLabel(voice)):microphoneLabel(voice)}</span></button>
       <button className={voice.deafened?'control active':'control'} onClick={()=>void voice.toggleDeafen()}><Headphones size={20}/><span>{voice.deafened?'Sesi aç':'Sağırlaştır'}</span></button>
       <button className={voice.cameraEnabled?'control media-on':'control'} disabled={!voice.canSpeak} onClick={()=>void voice.toggleCamera()}>{voice.cameraEnabled?<CameraOff size={20}/>:<Camera size={20}/>}<span>{voice.cameraEnabled?'Kamerayı kapat':'Kamerayı aç'}</span></button>
-      <button className={voice.screenSharing?'control media-on':'control'} disabled={!voice.canSpeak} onClick={()=>void voice.toggleScreenShare()}>{voice.screenSharing?<ScreenShareOff size={20}/>:<MonitorUp size={20}/>}<span>{voice.screenSharing?'Paylaşımı durdur':'Ekran paylaş'}</span></button>
+      <button className={voice.screenSharing?'control media-on':'control'} disabled={!voice.canSpeak||voice.screenBusy} onClick={()=>void voice.toggleScreenShare()}>{voice.screenSharing?<ScreenShareOff size={20}/>:<MonitorUp size={20}/>}<span>{voice.screenSharing?'Paylaşımı durdur':'Ekran paylaş'}</span></button>
     </div>
     {voice.inputMode==='push_to_talk'&&voice.canSpeak&&<div className={voice.pushToTalkActive?'ptt-status active':'ptt-status'}><Mic size={14}/><span>{voice.pushToTalkActive?'Bas-konuş aktif · ses gönderiliyor':`${pushToTalkKeyLabel(voice.pushToTalkKey)} tuşunu basılı tutarak konuş`}</span></div>}
 

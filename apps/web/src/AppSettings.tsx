@@ -104,7 +104,7 @@ export function AppSettingsModal({user,preferences,onClose,onSave,onSessionRenew
   return <dialog ref={dialog} className="modal-backdrop v10-dialog" aria-labelledby="app-settings-title" onCancel={e=>{e.preventDefault();onClose()}}>
     <form className="app-settings-panel" onSubmit={handleSubmit}>
       <aside className="app-settings-nav">
-        <div className="settings-brand"><span>ST</span><div><b>ShakeChat</b><small>v1.9 ayarları</small></div></div>
+        <div className="settings-brand"><span>ST</span><div><b>ShakeChat</b><small>v1.9.10 ayarları</small></div></div>
         <button type="button" className={tab==='account'?'active':''} onClick={()=>{setTab('account');setError('')}}><UserCog size={17}/> Hesap</button>
         <button type="button" className={tab==='privacy'?'active':''} onClick={()=>{setTab('privacy');setError('')}}><ShieldCheck size={17}/> Gizlilik</button>
         <button type="button" className={tab==='appearance'?'active':''} onClick={()=>{setTab('appearance');setError('')}}><Palette size={17}/> Görünüm</button>
@@ -159,6 +159,12 @@ export function AppSettingsModal({user,preferences,onClose,onSave,onSessionRenew
             <label className="privacy-select">GATE THRESHOLD · {draft.noiseGateThreshold} dB<input aria-label="Gate Threshold" type="range" min="-70" max="-25" step="1" value={draft.noiseGateThreshold} onChange={e=>setDraft(p=>({...p,noiseGateThreshold:Number(e.target.value)}))}/><small>Daha sağa = daha agresif. Varsayılan -48 dB, hızlı açılır ve yumuşak kapanır.</small></label>
           </div></div>
         </>}
+
+        {tab==='media'&&<div className="setting-block voice-notification-settings"><b>Bildirim sesleri</b>
+          <label className="setting-toggle"><span>Kanala giriş / çıkış</span><input type="checkbox" checked={draft.channelSounds} onChange={e=>setDraft(p=>({...p,channelSounds:e.target.checked}))}/></label>
+          <label className="setting-toggle"><span>Yayın başlama / bitiş ve yeni izleyici</span><input type="checkbox" checked={draft.streamSounds} onChange={e=>setDraft(p=>({...p,streamSounds:e.target.checked}))}/></label>
+          <label>Bildirim ses seviyesi · %{draft.notificationVolume}<input aria-label="Bildirim ses seviyesi" type="range" min="0" max="100" value={draft.notificationVolume} onChange={e=>setDraft(p=>({...p,notificationVolume:Number(e.target.value)}))}/></label>
+        </div>}
 
         {(tab==='appearance'||tab==='media')&&<div className="modal-actions app-settings-actions"><button type="button" className="ghost" onClick={onClose}>Vazgeç</button><button className="primary">Ayarları kaydet</button></div>}
       </section>

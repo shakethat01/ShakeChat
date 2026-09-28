@@ -5,11 +5,12 @@ import { Namespace, Socket } from 'socket.io';
 import { PermissionsService } from '../permissions/permissions.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { VoiceService } from '../voice/voice.service';
+import { allowedOrigins } from '../cors';
 
 type TypingState = { client: Socket; roomId: string; timer: ReturnType<typeof setTimeout> };
 
 @WebSocketGateway({
-  cors: { origin: process.env.WEB_ORIGIN ?? 'http://localhost:5173', credentials: true },
+  cors: { origin: allowedOrigins(), credentials: true },
   namespace: '/chat',
   maxHttpBufferSize: 16 * 1024,
 })
@@ -253,6 +254,24 @@ export class MessagesGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     this.server.to(`user:${userBId}`).emit('friendship:changed', { userId: userAId });
   }
   emitMemberJoined(serverId: string, member: unknown) { this.server.to(`server:${serverId}`).emit('member:joined', { serverId, member }); }
+
+  emitMembershipChanged(serverId: string) { this.server.to(`server:${serverId}`).emit('members:changed', { serverId }); }
+
+  async removeDeletedServer(serverId: string, channelIds: string[], userIds: string[]) {
+    const rooms = new Set(channelIds.map(id => `channel:${id}`));
+    for (const userId of userIds) {
+      this.server.to(`user:${userId}`).emit('server:removed', { serverId, reason: 'deleted' });
+      for (const socketId of this.connections.get(userId) ?? []) {
+        const client = this.server.sockets.get(socketId);
+        if (!client) continue;
+        const typing = this.typingStates.get(client.id);
+        if (typing && rooms.has(`channel:${typing.roomId}`)) this.stopTyping(client);
+        for (const room of rooms) if (client.rooms.has(room)) await client.leave(room);
+        if (client.rooms.has(`server:${serverId}`)) await client.leave(`server:${serverId}`);
+      }
+    }
+    await Promise.all(channelIds.map(id => this.voice?.closeChannel(id)));
+  }
 
   async removeUserFromServer(serverId: string, userId: string, reason: 'left' | 'kicked' | 'banned') {
     this.server.to(`server:${serverId}`).emit('member:removed', { serverId, userId, reason });

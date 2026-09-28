@@ -41,6 +41,12 @@ export class RemoteAudioPlayback {
     for (const entry of this.entries.values()) this.applyVolume(entry, volumeFor);
   }
 
+  removeParticipant(identity: string, source?: PlaybackSource) {
+    for (const entry of [...this.entries.values()]) {
+      if (entry.identity === identity && (!source || entry.source === source)) this.remove(entry.track);
+    }
+  }
+
   remove(track: RemoteAudioTrack) {
     for (const [key, entry] of this.entries) {
       if (entry.track !== track) continue;

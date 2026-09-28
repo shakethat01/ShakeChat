@@ -1,6 +1,6 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Permission } from '@prisma/client';
-import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient, TrackSource } from 'livekit-server-sdk';
 import { PermissionsService } from '../permissions/permissions.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -19,6 +19,37 @@ export class VoiceService {
 
   roomName(channelId: string) {
     return `shakechat-${channelId}`;
+  }
+
+  private rosterCache = new Map<string, { expires: number; value: Promise<{ identity: string; name: string; muted: boolean; screen: boolean }[]> }>();
+
+  async participantsInServer(userId: string, serverId: string) {
+    const member = await this.prisma.serverMember.findUnique({ where: { serverId_userId: { serverId, userId } }, select: { id: true } });
+    if (!member) throw new ForbiddenException('Bu sunucunun ses kanallarını göremezsin.');
+    const channels = await this.prisma.channel.findMany({ where: { serverId, type: 'VOICE' }, select: { id: true } });
+    const visible = (await Promise.all(channels.map(async channel => ({ channel, allowed: await this.permissions.has(userId, serverId, Permission.VIEW_CHANNEL, channel.id) })))).filter(item => item.allowed);
+    const rows = await Promise.all(visible.map(async ({ channel }) => {
+      const room = this.roomName(channel.id);
+      let cached = this.rosterCache.get(room);
+      if (!cached || cached.expires < Date.now()) {
+        // Bound memory and coalesce concurrent viewers' requests without caching permissions.
+        for (const [key, value] of this.rosterCache) if (value.expires < Date.now()) this.rosterCache.delete(key);
+        const value = this.roomClient.listParticipants(room).then(participants => participants.map(participant => ({
+          identity: participant.identity, name: participant.name || participant.identity,
+          muted: !participant.tracks.some(track => track.source === TrackSource.MICROPHONE && !track.muted),
+          screen: participant.tracks.some(track => track.source === TrackSource.SCREEN_SHARE && !track.muted),
+        }))).catch(error => {
+          this.rosterCache.delete(room);
+          if (error?.code === 'not_found' || error?.status === 404) return [];
+          throw error;
+        });
+        cached = { expires: Date.now() + 2000, value };
+        this.rosterCache.set(room, cached);
+      }
+      try { return { channelId: channel.id, participants: await cached.value, available: true }; }
+      catch { return { channelId: channel.id, participants: [], available: false }; }
+    }));
+    return { channels: rows };
   }
 
   async createJoinToken(userId: string, channelId: string) {
@@ -47,7 +78,7 @@ export class VoiceService {
       room,
       canSubscribe: true,
       canPublish: canSpeak,
-      canPublishData: false,
+      canPublishData: true,
     });
 
     return {
@@ -79,7 +110,7 @@ export class VoiceService {
           permission: {
             canSubscribe: true,
             canPublish: canSpeak,
-            canPublishData: false,
+            canPublishData: true,
           },
         });
       } catch {
@@ -105,6 +136,7 @@ export class VoiceService {
   }
 
   async closeChannel(channelId: string) {
+    this.rosterCache.delete(this.roomName(channelId));
     try { await this.roomClient.deleteRoom(this.roomName(channelId)); }
     catch { /* No active LiveKit room is fine. */ }
   }

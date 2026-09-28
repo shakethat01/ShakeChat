@@ -1,11 +1,50 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { AuditAction, MemberRole, Permission } from '@prisma/client';
+import { AuditAction, MemberRole, Permission, Prisma } from '@prisma/client';
 import { PermissionsService } from '../permissions/permissions.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class ServersService {
   constructor(private prisma: PrismaService, private permissions: PermissionsService) {}
+
+  private async removeNonOwner(db: Pick<Prisma.TransactionClient, 'serverMember'>, id: string) {
+    try { return await db.serverMember.delete({ where: { id, role: { not: MemberRole.OWNER } } }); }
+    catch (error) {
+      if ((error as { code?: string }).code === 'P2025') throw new ForbiddenException('Üyelik değişti; sunucu sahibi çıkarılamaz.');
+      throw error;
+    }
+  }
+
+  async transferOwnership(userId: string, serverId: string, targetUserId: string) {
+    if (userId === targetUserId) throw new BadRequestException('Sunucu zaten sana ait.');
+    return this.prisma.$transaction(async tx => {
+      const server = await tx.server.findUnique({ where: { id: serverId }, select: { ownerId: true } });
+      if (server?.ownerId !== userId) throw new ForbiddenException('Sahipliği yalnızca sunucunun sahibi devredebilir.');
+      const target = await tx.serverMember.findUnique({ where: { serverId_userId: { serverId, userId: targetUserId } }, select: { id: true } });
+      if (!target) throw new BadRequestException('Yeni sahip bu sunucunun üyesi olmalı.');
+      // Compare-and-swap locks the server row and serializes simultaneous transfers/deletion.
+      const changed = await tx.server.updateMany({ where: { id: serverId, ownerId: userId }, data: { ownerId: targetUserId } });
+      if (changed.count !== 1) throw new ForbiddenException('Sahipliği yalnızca sunucunun sahibi devredebilir.');
+      await tx.serverMember.update({ where: { id: target.id }, data: { role: MemberRole.OWNER, messageRestrictedUntil: null, messageRestrictionReason: null } });
+      await tx.serverMember.update({ where: { serverId_userId: { serverId, userId } }, data: { role: MemberRole.MEMBER } });
+      // Legacy role links must not retain a stale managed OWNER role.
+      await tx.serverMemberRole.deleteMany({ where: { member: { serverId, userId: { in: [userId, targetUserId] } }, role: { isManaged: true } } });
+      return { ok: true, ownerId: targetUserId };
+    });
+  }
+
+  async deleteServer(userId: string, serverId: string, confirmationName: string) {
+    return this.prisma.$transaction(async tx => {
+      const server = await tx.server.findUnique({ where: { id: serverId }, select: { ownerId: true, name: true, channels: { select: { id: true } }, members: { select: { userId: true } } } });
+      if (!server) throw new NotFoundException('Sunucu bulunamadı.');
+      if (server.ownerId !== userId) throw new ForbiddenException('Sunucuyu yalnızca sahibi silebilir.');
+      if (server.name !== confirmationName) throw new BadRequestException('Onay için sunucunun adını aynen yaz.');
+      const attachments = await tx.attachment.findMany({ where: { message: { channel: { serverId } } }, select: { objectKey: true } });
+      const deleted = await tx.server.deleteMany({ where: { id: serverId, ownerId: userId } });
+      if (deleted.count !== 1) throw new ForbiddenException('Sunucu sahipliği değişti; silme iptal edildi.');
+      return { channelIds: server.channels.map(channel => channel.id), userIds: server.members.map(member => member.userId), objectKeys: attachments.map(file => file.objectKey) };
+    });
+  }
 
   async list(userId: string) {
     const servers = await this.prisma.server.findMany({
@@ -78,7 +117,7 @@ export class ServersService {
     });
     if (!member) throw new NotFoundException('Sunucu üyeliği bulunamadı.');
     if (member.role === MemberRole.OWNER) throw new ForbiddenException('Sunucu sahibi sunucudan ayrılamaz. Önce sahipliği devret veya sunucuyu sil.');
-    await this.prisma.serverMember.delete({ where: { id: member.id } });
+    await this.removeNonOwner(this.prisma, member.id);
     return { ok: true };
   }
 
@@ -94,7 +133,7 @@ export class ServersService {
     if (target.role === MemberRole.OWNER) throw new ForbiddenException('Sunucu sahibi çıkarılamaz.');
     if (!this.permissions.canKickByHierarchy(requester.role, target.role)) throw new ForbiddenException('Eşit veya daha yüksek yetkili bir üyeyi çıkaramazsın.');
     await this.prisma.$transaction(async tx => {
-      await tx.serverMember.delete({ where: { id: target.id } });
+      await this.removeNonOwner(tx, target.id);
       await tx.serverAuditLog.create({ data: {
         serverId, actorId: requesterId, targetUserId, action: AuditAction.MEMBER_KICKED,
         actorName: requester.user.displayName?.trim() || requester.user.username,
@@ -182,7 +221,7 @@ export class ServersService {
         update: { reason: reason?.trim().slice(0, 240) || null, createdAt: new Date() },
         create: { serverId, userId: targetUserId, reason: reason?.trim().slice(0, 240) || null },
       });
-      if (target) await tx.serverMember.delete({ where: { id: target.id } });
+      if (target) await this.removeNonOwner(tx, target.id);
       await tx.serverAuditLog.create({ data: {
         serverId, actorId: requesterId, targetUserId, action: AuditAction.MEMBER_BANNED,
         actorName: requester.user.displayName?.trim() || requester.user.username,

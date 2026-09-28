@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { Room } from 'livekit-client';
 import { DEFAULT_PREFERENCES } from './preferences';
 import { useVoiceRuntime } from './useVoiceRuntime';
 import { acquireMicrophoneTestIsolation, isMicrophoneTestActive } from './microphoneTestIsolation';
 
-const state=vi.hoisted(()=>({rooms:[] as any[],screenPicker:null as null|(()=>Promise<void>), errors:vi.fn(), meter:vi.fn()}));
+const state=vi.hoisted(()=>({rooms:[] as any[],screenPicker:null as null|(()=>Promise<void>), errors:vi.fn(), meter:vi.fn(), sounds:vi.fn()}));
+vi.mock('./voiceNotifications',()=>({playVoiceSound:(...args:any[])=>state.sounds(...args)}));
 vi.mock('./api',()=>({api:{voiceToken:vi.fn(async()=>({url:'wss://test',token:'test',canSpeak:true}))}}));
 vi.mock('./useLocalMicActivity',()=>({useLocalMicActivity:(track:any)=>{
   state.meter(track);return {available:true,speaking:Boolean(track)};
@@ -45,7 +47,7 @@ vi.mock('livekit-client',()=>{
       this.options=options;
       this.active={audioinput:options.audioCaptureDefaults.deviceId||'default',audiooutput:options.audioOutput?.deviceId||'default',videoinput:'camera'};
       this.localParticipant={
-        identity:'me',name:'Me',isLocal:true,isSpeaking:false,isMicrophoneEnabled:false,
+        identity:'me',name:'Me',isLocal:true,isSpeaking:false,isMicrophoneEnabled:false,publishData:vi.fn(async()=>{}),
         getTrackPublication:(source:string)=>source===Source.Microphone?this.mic:source===Source.Camera?this.camera:source===Source.ScreenShareAudio?this.screenAudio:this.screen,
         setMicrophoneEnabled:vi.fn(async(enabled:boolean,capture:any)=>{
           if(enabled){
@@ -81,7 +83,7 @@ vi.mock('livekit-client',()=>{
 });
 
 beforeEach(()=>{
-  localStorage.clear();state.rooms=[];state.screenPicker=null;state.errors.mockClear();state.meter.mockClear();
+  localStorage.clear();state.rooms=[];state.screenPicker=null;state.errors.mockClear();state.meter.mockClear();state.sounds.mockClear();
   (window as any).__TAURI_INTERNALS__={};
   vi.spyOn(HTMLMediaElement.prototype,'pause').mockImplementation(()=>{});
 });
@@ -115,15 +117,29 @@ it('uses RNNoise from the first join and keeps one session, mic and devices thro
   expect(state.errors).not.toHaveBeenCalled();
 });
 
-it('does not reconnect a viewer when a remote participant starts sharing',async()=>{
-  const {result}=await join();
-  const room=state.rooms[0];
-  room.remoteParticipants.set('friend',{identity:'friend',name:'Friend',isLocal:false,isSpeaking:false,isMicrophoneEnabled:true,
-    getTrackPublication:(source:string)=>source==='screen'?{track:{},isMuted:false,trackSid:'remote-screen'}:undefined});
-  await act(async()=>{room.emit('TrackPublished')});
-  expect(result.current.videoTracks).toHaveLength(1);
-  expect(room.disconnect).not.toHaveBeenCalled();
-  expect(state.rooms).toHaveLength(1);
+function addRemote(room:any, identity='friend') {
+  const screen:any={source:'screen',isMuted:false,trackSid:`${identity}-screen`,setSubscribed:vi.fn(),isSubscribed:false};
+  const audio:any={source:'screen_audio',isMuted:false,trackSid:`${identity}-audio`,setSubscribed:vi.fn()};
+  const mic:any={source:'microphone',isMuted:false,trackSid:`${identity}-mic`,setSubscribed:vi.fn()};
+  const publications=[screen,audio,mic];
+  const participant={identity,name:identity,isLocal:false,isSpeaking:false,isMicrophoneEnabled:true,trackPublications:new Map(publications.map(pub=>[pub.trackSid,pub])),getTrackPublication:(source:string)=>publications.find(pub=>pub.source===source)};
+  room.remoteParticipants.set(identity,participant);
+  return {screen,audio,mic,participant};
+}
+
+it('discovers a screen without subscribing or reconnecting until the viewer opts in',async()=>{
+  const {result}=await join();const room=state.rooms[0];const remote=addRemote(room);
+  await act(async()=>{room.emit('TrackPublished',remote.screen,remote.participant)});
+  expect(room.connect).toHaveBeenCalledWith('wss://test','test',{autoSubscribe:false});
+  expect(result.current.availableScreens).toHaveLength(1);
+  expect(result.current.videoTracks).toHaveLength(0);
+  expect(remote.screen.setSubscribed).toHaveBeenLastCalledWith(false);
+  expect(remote.audio.setSubscribed).toHaveBeenLastCalledWith(false);
+  expect(remote.mic.setSubscribed).toHaveBeenLastCalledWith(true);
+  await act(async()=>{result.current.setScreenWatching('friend',true)});
+  expect(remote.screen.setSubscribed).toHaveBeenLastCalledWith(true);
+  expect(remote.audio.setSubscribed).toHaveBeenLastCalledWith(true);
+  expect(room.disconnect).not.toHaveBeenCalled();expect(state.rooms).toHaveLength(1);
 });
 
 it('does not undo a mute selected while the screen picker is open',async()=>{
@@ -174,7 +190,7 @@ it('keeps previous device on failed switch and falls back when saved devices are
   room.switchActiveDevice.mockResolvedValueOnce(false);
   await act(async()=>{await result.current.switchInput('mic-2')});
   expect(result.current.inputDeviceId).toBe('default');
-  expect(JSON.parse(localStorage.getItem('shakechat.voice-devices.v1')!).audioinput).toBe('');
+  expect(JSON.parse(localStorage.getItem('shakechat.voice-devices.v1')!).audioinput).toBe('unplugged');
   expect(state.errors).toHaveBeenCalled();
 });
 
@@ -277,6 +293,8 @@ it('controls mic and stream gain separately, deduplicates playback and preserves
   const {result}=await join();
   const room=state.rooms[0];
   const mic=remoteAudio('mic'),stream=remoteAudio('stream');
+  addRemote(room,'bob');
+  await act(async()=>{result.current.setScreenWatching('bob',true)});
   await act(async()=>{
     room.emit('TrackSubscribed',mic,{trackSid:'mic',source:'microphone'},{identity:'bob'});
     room.emit('TrackSubscribed',stream,{trackSid:'stream',source:'screen_audio'},{identity:'bob'});
@@ -312,4 +330,46 @@ it('does not mute or stop a published screen-audio track when the publisher mute
   expect(audio.pauseUpstream).not.toHaveBeenCalled();
   expect(audio.isMuted).toBe(false);
   expect(room.screen).toBe(video);
+});
+
+
+it('stops both stream tracks immediately and rejects late audio after stop watching',async()=>{
+  const {result}=await join();const room=state.rooms[0],remote=addRemote(room,'bob'),audio=remoteAudio('stream');
+  await act(async()=>{result.current.setScreenWatching('bob',true);room.emit('TrackSubscribed',audio,remote.audio,remote.participant)});
+  expect(document.body.contains(audio.element)).toBe(true);
+  await act(async()=>{result.current.setScreenWatching('bob',false)});
+  expect(remote.screen.setSubscribed).toHaveBeenLastCalledWith(false);
+  expect(remote.audio.setSubscribed).toHaveBeenLastCalledWith(false);
+  expect(document.body.contains(audio.element)).toBe(false);
+  await act(async()=>{room.emit('TrackSubscribed',audio,remote.audio,remote.participant)});
+  expect(audio.attach).toHaveBeenCalledTimes(1);
+  expect(result.current.watchingScreens).toEqual([]);
+});
+
+it('counts each actual viewer once and ignores messages for an old screen',async()=>{
+  const {result}=await join();const room=state.rooms[0];
+  await act(async()=>{await result.current.toggleScreenShare()});
+  const remote=addRemote(room,'bob');state.sounds.mockClear();
+  const emit=(data:any)=>room.emit('DataReceived',new TextEncoder().encode(JSON.stringify(data)),remote.participant,undefined,'shakechat.watch.v1');
+  await act(async()=>{emit({type:'watch',sid:'old-screen',watching:true});emit({type:'watch',sid:'screen',watching:true});emit({type:'watch',sid:'screen',watching:true})});
+  expect(result.current.screenViewers).toEqual(['bob']);
+  expect(state.sounds).toHaveBeenCalledTimes(1);expect(state.sounds.mock.calls[0][0]).toBe('viewer');
+  await act(async()=>{emit({type:'watch',sid:'screen',watching:false})});
+  expect(result.current.screenViewers).toEqual([]);
+});
+
+it('retains selected devices when enumeration is temporarily empty',async()=>{
+  localStorage.setItem('shakechat.voice-devices.v1',JSON.stringify({audioinput:'mic-2',audiooutput:'speaker-2'}));
+  const get=vi.spyOn(Room,'getLocalDevices').mockResolvedValue([]);
+  const first=await join();expect(first.result.current.status).toBe('connected');
+  expect(JSON.parse(localStorage.getItem('shakechat.voice-devices.v1')!)).toEqual({audioinput:'mic-2',audiooutput:'speaker-2'});
+  first.unmount();get.mockRestore();
+  const second=await join();expect(second.result.current.inputDeviceId).toBe('mic-2');expect(second.result.current.outputDeviceId).toBe('speaker-2');
+});
+
+it('disables duplicate browser noise suppression while RNNoise stays enabled',async()=>{
+  await join();const room=state.rooms[0];
+  expect(room.options.audioCaptureDefaults.noiseSuppression).toBe(false);
+  expect(room.mic.track.applyConstraints).toHaveBeenLastCalledWith({echoCancellation:true,noiseSuppression:false,autoGainControl:false});
+  expect(room.mic.track.getProcessor().name).toBe('shakechat-rnnoise-gate');
 });

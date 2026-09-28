@@ -6,6 +6,8 @@ import { NoiseGateProcessor } from './noiseGate';
 import { loadVoiceDevices, saveVoiceDevices } from './voiceDevicePreferences';
 import type { RemoteAudioTrack } from 'livekit-client';
 import { RemoteAudioPlayback, type PlaybackSource } from './remoteAudioPlayback';
+import { applyScreenSettings, replaceScreenSource, screenOptions, settingsForPreset, type ScreenSettings } from './screenShareControl';
+import { playVoiceSound, type VoiceSound } from './voiceNotifications';
 import { isMicrophoneTestActive, registerMicrophoneTestIsolation } from './microphoneTestIsolation';
 
 export type VoiceParticipant = {
@@ -74,6 +76,18 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
   const [microphoneTrack, setMicrophoneTrack] = useState<MediaStreamTrack | null>(null);
   const roomRef = useRef<Room | null>(null);
   const channelRef = useRef('');
+  const readyRef = useRef(false);
+  const watchingRef = useRef(new Set<string>());
+  const subscriptionIntentRef = useRef(new Map<string, boolean>());
+  const viewersRef = useRef(new Set<string>());
+  const [watchingScreens, setWatchingScreens] = useState<string[]>([]);
+  const [availableScreens, setAvailableScreens] = useState<VoiceVideoTrack[]>([]);
+  const [screenViewers, setScreenViewers] = useState<string[]>([]);
+  const [screenSettings, setScreenSettings] = useState<ScreenSettings>(() => settingsForPreset(preferences.screenQuality));
+  const settingsRef = useRef(screenSettings);
+  const [screenBusy, setScreenBusy] = useState(false);
+  const soundRef = useRef<(event: VoiceSound) => void>(() => {});
+
   const operationRef = useRef(0);
   const deafenedRef = useRef(false);
   const playbackRef = useRef(new RemoteAudioPlayback());
@@ -109,6 +123,31 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
   const [locallyMutedParticipants, setLocallyMutedParticipants] = useState<string[]>([]);
   const [pushToTalkActive, setPushToTalkActive] = useState(false);
 
+  soundRef.current = event => {
+    if (deafenedRef.current || isMicrophoneTestActive()) return;
+    const enabled = event === 'join' || event === 'leave' ? preferences.channelSounds : preferences.streamSounds;
+    if (enabled) playVoiceSound(event, preferences.notificationVolume, devicesRef.current.audiooutput);
+  };
+
+  const sendWatchState = useCallback((room: Room, identity: string, watching: boolean) => {
+    const publication = room.remoteParticipants.get(identity)?.getTrackPublication(Track.Source.ScreenShare);
+    if (!publication) return;
+    const payload = new TextEncoder().encode(JSON.stringify({ type: 'watch', sid: publication.trackSid, watching }));
+    void room.localParticipant.publishData?.(payload, { reliable: true, topic: 'shakechat.watch.v1', destinationIdentities: [identity] }).catch(() => undefined);
+  }, []);
+
+  const syncSubscriptions = useCallback((room: Room) => {
+    for (const participant of room.remoteParticipants.values()) {
+      for (const publication of participant.trackPublications?.values() ?? []) {
+        const screen = publication.source === Track.Source.ScreenShare || publication.source === Track.Source.ScreenShareAudio;
+        const desired = !screen || watchingRef.current.has(participant.identity);
+        if (subscriptionIntentRef.current.get(publication.trackSid) === desired) continue;
+        subscriptionIntentRef.current.set(publication.trackSid, desired);
+        publication.setSubscribed(desired);
+      }
+    }
+  }, []);
+
   const queueMicrophoneOperation = useCallback((task: () => Promise<void>) => {
     const operation = microphoneOperationsRef.current.then(task);
     microphoneOperationsRef.current = operation.catch(() => undefined);
@@ -126,7 +165,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
     sampleRate: 48_000,
     channelCount: 2,
     echoCancellation: preferences.echoCancellation,
-    noiseSuppression: preferences.noiseSuppression,
+    noiseSuppression: false,
     autoGainControl: preferences.autoGainControl,
     ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
   }), [preferences.autoGainControl, preferences.echoCancellation, preferences.noiseSuppression]);
@@ -137,7 +176,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
     if (!(track instanceof LocalAudioTrack)) return;
     await track.applyConstraints({
       echoCancellation: preferences.echoCancellation,
-      noiseSuppression: preferences.noiseSuppression,
+      noiseSuppression: false,
       autoGainControl: preferences.autoGainControl,
     }).catch(() => undefined);
     let gate = noiseGateProcessorRef.current;
@@ -153,7 +192,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       sampleRate: 48_000,
       channelCount: 2,
       echoCancellation: preferences.echoCancellation,
-      noiseSuppression: preferences.noiseSuppression,
+      noiseSuppression: false,
       autoGainControl: preferences.autoGainControl,
     });
     console.info('[voice] applied noise gate settings', { enabled: preferences.noiseGateEnabled, thresholdDb: preferences.noiseGateThreshold });
@@ -167,7 +206,8 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       await room.localParticipant.setMicrophoneEnabled(false);
       return;
     }
-    const publication = await room.localParticipant.setMicrophoneEnabled(true, microphoneCaptureOptions(deviceId || devicesRef.current.audioinput || undefined), MICROPHONE_PUBLISH_OPTIONS);
+    const publication = await room.localParticipant.setMicrophoneEnabled(true, microphoneCaptureOptions(deviceId ?? (room.getActiveDevice('audioinput') || undefined)), MICROPHONE_PUBLISH_OPTIONS);
+    if (roomRef.current !== room) return;
     if (publication) await applyMicrophoneTuning(room, publication);
     // Isolation can be requested while getUserMedia / processor.init is awaiting.
     if (isMicrophoneTestActive() || deafenedRef.current) await room.localParticipant.setMicrophoneEnabled(false);
@@ -175,6 +215,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
 
   const syncParticipants = useCallback((room: Room) => {
     if (roomRef.current !== room) return;
+    syncSubscriptions(room);
     const all: Participant[] = [room.localParticipant, ...room.remoteParticipants.values()];
     setParticipants(all.map(participant => ({
       identity: participant.identity,
@@ -183,10 +224,11 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       speaking: participant.isSpeaking,
       muted: participant.getTrackPublication(Track.Source.Microphone)?.isMuted ?? !participant.isMicrophoneEnabled,
       camera: publicationIsActive(participant.getTrackPublication(Track.Source.Camera)),
-      screen: publicationIsActive(participant.getTrackPublication(Track.Source.ScreenShare)),
+      screen: Boolean(participant.getTrackPublication(Track.Source.ScreenShare) && !participant.getTrackPublication(Track.Source.ScreenShare)?.isMuted),
     })));
 
     const nextVideoTracks: VoiceVideoTrack[] = [];
+    const nextScreens: VoiceVideoTrack[] = [];
     for (const participant of all) {
       const camera = participant.getTrackPublication(Track.Source.Camera);
       if (publicationIsActive(camera)) {
@@ -200,7 +242,11 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
         });
       }
       const screen = participant.getTrackPublication(Track.Source.ScreenShare);
-      if (publicationIsActive(screen)) {
+      if (screen && !screen.isMuted) {
+        const item: VoiceVideoTrack = { id: `${participant.identity}:screen:${screen.trackSid}`, identity: participant.identity, name: participant.name || participant.identity, local: participant.isLocal, source: 'screen', publication: screen };
+        nextScreens.push(item);
+        if (!participant.isLocal && !watchingRef.current.has(participant.identity)) continue;
+        if (!publicationIsActive(screen)) continue;
         if (!participant.isLocal && screen instanceof RemoteTrackPublication) {
           // Receiving quality must not depend on this viewer's own publishing
           // preference. Otherwise a second account left at 1080p30 asks LiveKit
@@ -222,13 +268,15 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       }
     }
     setVideoTracks(nextVideoTracks);
+    setAvailableScreens(nextScreens);
 
     const local = room.localParticipant;
+    setMuted(!local.isMicrophoneEnabled);
     const mic = local.getTrackPublication(Track.Source.Microphone)?.audioTrack;
     if (mic) setMicrophoneTrack(mic.mediaStreamTrack);
     setCameraEnabled(publicationIsActive(local.getTrackPublication(Track.Source.Camera)));
     setScreenSharing(publicationIsActive(local.getTrackPublication(Track.Source.ScreenShare)));
-  }, []);
+  }, [syncSubscriptions]);
 
   const refreshDevices = useCallback(async (requestPermissions = false) => {
     try {
@@ -257,6 +305,10 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
 
   const leave = useCallback(async () => {
     operationRef.current += 1;
+    if (readyRef.current) soundRef.current('leave');
+    readyRef.current = false;
+    watchingRef.current.clear(); subscriptionIntentRef.current.clear(); viewersRef.current.clear();
+    setWatchingScreens([]); setAvailableScreens([]); setScreenViewers([]);
     const room = roomRef.current;
     roomRef.current = null;
     testPausedScreenRef.current = null;
@@ -297,8 +349,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       if (operation !== operationRef.current) return;
       const input = inputs.some(device => device.deviceId === devicesRef.current.audioinput) ? devicesRef.current.audioinput : '';
       const output = outputs.some(device => device.deviceId === devicesRef.current.audiooutput) ? devicesRef.current.audiooutput : '';
-      devicesRef.current = { audioinput: input, audiooutput: output };
-      saveVoiceDevices(devicesRef.current);
+      // A permission prompt or temporary device-list gap must not erase saved choices.
       setInputDeviceId(input); setOutputDeviceId(output);
       const room = new Room({
         adaptiveStream: true,
@@ -309,7 +360,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
           sampleRate: 48_000,
           channelCount: 2,
           echoCancellation: preferences.echoCancellation,
-          noiseSuppression: preferences.noiseSuppression,
+          noiseSuppression: false,
           autoGainControl: preferences.autoGainControl,
         },
       });
@@ -317,16 +368,64 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       channelRef.current = nextChannelId;
 
       const sync = () => syncParticipants(room);
-      room.on(RoomEvent.ParticipantConnected, sync);
-      room.on(RoomEvent.ParticipantDisconnected, sync);
+      room.on(RoomEvent.ParticipantConnected, () => { if (roomRef.current !== room) return; if (readyRef.current) soundRef.current('join'); sync(); });
+      room.on(RoomEvent.ParticipantDisconnected, participant => {
+        if (roomRef.current !== room) return;
+        if (readyRef.current) soundRef.current('leave');
+        watchingRef.current.delete(participant.identity); viewersRef.current.delete(participant.identity);
+        setWatchingScreens([...watchingRef.current]); setScreenViewers([...viewersRef.current]);
+        playbackRef.current.removeParticipant(participant.identity);
+        sync();
+      });
       room.on(RoomEvent.ActiveSpeakersChanged, sync);
       room.on(RoomEvent.TrackMuted, sync);
       room.on(RoomEvent.TrackUnmuted, sync);
-      room.on(RoomEvent.TrackPublished, sync);
-      room.on(RoomEvent.TrackUnpublished, sync);
-      room.on(RoomEvent.LocalTrackPublished, sync);
-      room.on(RoomEvent.LocalTrackUnpublished, sync);
+      room.on(RoomEvent.TrackPublished, publication => {
+        if (roomRef.current !== room) return;
+        if (readyRef.current && publication.source === Track.Source.ScreenShare) soundRef.current('stream-start');
+        sync();
+      });
+      room.on(RoomEvent.TrackUnpublished, (publication, participant) => {
+        if (roomRef.current !== room) return;
+        subscriptionIntentRef.current.delete(publication.trackSid);
+        if (publication.source === Track.Source.ScreenShare) {
+          if (readyRef.current) soundRef.current('stream-stop');
+          watchingRef.current.delete(participant.identity); setWatchingScreens([...watchingRef.current]);
+          playbackRef.current.removeParticipant(participant.identity, 'screen');
+        }
+        sync();
+      });
+      room.on(RoomEvent.LocalTrackPublished, publication => {
+        if (roomRef.current !== room) return;
+        if (readyRef.current && publication.source === Track.Source.ScreenShare) soundRef.current('stream-start');
+        sync();
+      });
+      room.on(RoomEvent.LocalTrackUnpublished, publication => {
+        if (roomRef.current !== room) return;
+        if (publication.source === Track.Source.ScreenShare) {
+          if (readyRef.current) soundRef.current('stream-stop');
+          viewersRef.current.clear(); setScreenViewers([]);
+        }
+        sync();
+      });
+      room.on(RoomEvent.DataReceived, (payload, participant, _kind, topic) => {
+        if (roomRef.current !== room || !participant || topic !== 'shakechat.watch.v1' || payload.byteLength > 512) return;
+        try {
+          const data = JSON.parse(new TextDecoder().decode(payload));
+          if (data.type === 'query') {
+            if (watchingRef.current.has(participant.identity) && participant.getTrackPublication(Track.Source.ScreenShare)?.isSubscribed) sendWatchState(room, participant.identity, true);
+            return;
+          }
+          const publication = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+          if (data.type !== 'watch' || data.sid !== publication?.trackSid || typeof data.watching !== 'boolean') return;
+          const existed = viewersRef.current.has(participant.identity);
+          if (data.watching) viewersRef.current.add(participant.identity); else viewersRef.current.delete(participant.identity);
+          setScreenViewers([...viewersRef.current]);
+          if (data.watching && !existed && readyRef.current) soundRef.current('viewer');
+        } catch { /* Ignore malformed data from another participant. */ }
+      });
       room.on(RoomEvent.ParticipantPermissionsChanged, (_previous, participant) => {
+        if (roomRef.current !== room) return;
         if (participant.isLocal) {
           const publishAllowed = participant.permissions?.canPublish ?? false;
           setCanSpeak(publishAllowed);
@@ -343,6 +442,9 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       });
       room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
         if (roomRef.current !== room) return;
+        const screen = publication.source === Track.Source.ScreenShare || publication.source === Track.Source.ScreenShareAudio;
+        if (screen && !watchingRef.current.has(participant.identity)) { publication.setSubscribed(false); return; }
+        if (publication.source === Track.Source.ScreenShare) sendWatchState(room, participant.identity, true);
         if (track.kind === Track.Kind.Audio) {
           playbackRef.current.attach(track as RemoteAudioTrack, publication, participant.identity, playbackVolume);
         }
@@ -354,10 +456,19 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
         }
         sync();
       });
-      room.on(RoomEvent.Reconnecting, () => setStatus('reconnecting'));
-      room.on(RoomEvent.Reconnected, () => { setStatus('connected'); sync(); });
+      room.on(RoomEvent.Reconnecting, () => { if (roomRef.current === room) { readyRef.current = false; setStatus('reconnecting'); } });
+      room.on(RoomEvent.Reconnected, () => {
+        if (roomRef.current !== room) return;
+        subscriptionIntentRef.current.clear(); sync(); setStatus('connected'); readyRef.current = true;
+        for (const identity of watchingRef.current) sendWatchState(room, identity, true);
+        viewersRef.current.clear(); setScreenViewers([]);
+        void room.localParticipant.publishData?.(new TextEncoder().encode('{"type":"query"}'), { reliable: true, topic: 'shakechat.watch.v1' }).catch(() => undefined);
+      });
       room.on(RoomEvent.Disconnected, () => {
         if (roomRef.current !== room) return;
+        readyRef.current = false;
+        watchingRef.current.clear(); subscriptionIntentRef.current.clear(); viewersRef.current.clear();
+        setWatchingScreens([]); setAvailableScreens([]); setScreenViewers([]);
         roomRef.current = null;
         testPausedScreenRef.current = null;
         channelRef.current = '';
@@ -380,19 +491,21 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       });
       room.on(RoomEvent.MediaDevicesChanged, () => { void refreshDevices(false); });
 
-      await room.connect(credentials.url, credentials.token);
+      await room.connect(credentials.url, credentials.token, { autoSubscribe: false });
+      syncSubscriptions(room);
       if (operation !== operationRef.current || roomRef.current !== room) { await room.disconnect(true); return; }
       setChannelId(nextChannelId);
       setCanSpeak(credentials.canSpeak);
       if (credentials.canSpeak) {
         const openMic = inputModeRef.current === 'voice_activity' && !userMutedRef.current && !deafenedRef.current;
-        await setMicrophone(room, openMic, input || undefined);
+        await setMicrophone(room, openMic, input);
         setMuted(!room.localParticipant.isMicrophoneEnabled);
       } else {
         setMuted(true);
       }
       if (operation !== operationRef.current || roomRef.current !== room) return;
       setStatus('connected');
+      readyRef.current = true; soundRef.current('join');
       try { await room.startAudio(); } catch { /* User can retry through a control click. */ }
       await refreshDevices(true);
       sync();
@@ -417,7 +530,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       if (room) try { await room.disconnect(true); } catch { /* ignore */ }
       onError(error instanceof Error ? error.message : 'Ses kanalına bağlanılamadı.');
     }
-  }, [enabled, inputDeviceId, leave, onError, playbackVolume, preferences.autoGainControl, preferences.echoCancellation, preferences.noiseSuppression, preferences.voiceInputMode, refreshDevices, removeAudioElements, setMicrophone, status, syncParticipants]);
+  }, [enabled, inputDeviceId, leave, onError, playbackVolume, preferences.autoGainControl, preferences.echoCancellation, preferences.noiseSuppression, preferences.voiceInputMode, refreshDevices, removeAudioElements, setMicrophone, status, syncParticipants, syncSubscriptions, sendWatchState]);
 
   const toggleMute = useCallback(async () => {
     const room = roomRef.current;
@@ -473,11 +586,12 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
     if (!canSpeak) { onError('Bu ses kanalında ekran paylaşma yetkin yok.'); return; }
     if (!screenSharing && isMicrophoneTestActive()) { onError('Yeni yayın başlatmadan önce mikrofon testini durdur.'); return; }
     if (screenPickerPendingRef.current) return;
-    screenPickerPendingRef.current = true;
+    screenPickerPendingRef.current = true; setScreenBusy(true);
     try {
       const enable = !screenSharing;
-      const resolution = enable ? screenCaptureFor(preferences.screenQuality) : undefined;
-      const publishOptions = enable ? screenPublishFor(preferences.screenQuality) : undefined;
+      const options = screenOptions(settingsRef.current);
+      const resolution = enable ? options.resolution : undefined;
+      const publishOptions = enable ? options.publish : undefined;
       console.info('[voice] selected screen preset', { preset: preferences.screenQuality, label: screenQualityLabel(preferences.screenQuality), capture: resolution, publish: publishOptions?.screenShareEncoding });
       const publication = await room.localParticipant.setScreenShareEnabled(
         enable,
@@ -517,6 +631,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
           console.warn('[voice] Ultra capture returned below target FPS', { target: 144, actual: actual.frameRate });
         }
       }
+      if (roomRef.current !== room) { if (enable) await room.localParticipant.setScreenShareEnabled(false); return; }
       setScreenSharing(enable);
       syncParticipants(room);
     } catch (error) {
@@ -524,9 +639,51 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       if (!/cancel|denied|permission/i.test(message)) onError(message);
       syncParticipants(room);
     } finally {
-      screenPickerPendingRef.current = false;
+      screenPickerPendingRef.current = false; setScreenBusy(false);
     }
   }, [canSpeak, onError, preferences.screenQuality, screenSharing, syncParticipants]);
+
+  const setScreenWatching = useCallback((identity: string, watch: boolean) => {
+    const room = roomRef.current;
+    if (!room || !room.remoteParticipants.get(identity)?.getTrackPublication(Track.Source.ScreenShare)) return;
+    if (watch) watchingRef.current.add(identity); else {
+      sendWatchState(room, identity, false);
+      watchingRef.current.delete(identity);
+      playbackRef.current.removeParticipant(identity, 'screen');
+    }
+    setWatchingScreens([...watchingRef.current]);
+    syncParticipants(room);
+  }, [sendWatchState, syncParticipants]);
+
+  const changeScreenSettings = useCallback(async (next: ScreenSettings) => {
+    const room = roomRef.current;
+    if (screenPickerPendingRef.current || !room) return;
+    const track = room.localParticipant.getTrackPublication(Track.Source.ScreenShare)?.videoTrack;
+    if (!track) return;
+    screenPickerPendingRef.current = true; setScreenBusy(true);
+    try {
+      await applyScreenSettings(track, next);
+      if (roomRef.current === room) { settingsRef.current = next; setScreenSettings(next); syncParticipants(room); }
+    } catch (error) { onError(error instanceof Error ? error.message : 'Yayın kalitesi değiştirilemedi.'); }
+    finally { screenPickerPendingRef.current = false; setScreenBusy(false); }
+  }, [onError, syncParticipants]);
+
+  const changeScreenSource = useCallback(async () => {
+    const room = roomRef.current;
+    if (!room || screenPickerPendingRef.current) return;
+    if (isMicrophoneTestActive()) { onError('Ekranı değiştirmeden önce mikrofon testini durdur.'); return; }
+    screenPickerPendingRef.current = true; setScreenBusy(true);
+    try {
+      await replaceScreenSource(room, settingsRef.current, () => roomRef.current === room);
+      if (roomRef.current === room) syncParticipants(room);
+    } catch (error) {
+      if (!(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError'))) onError(error instanceof Error ? error.message : 'Ekran değiştirilemedi.');
+    } finally { screenPickerPendingRef.current = false; setScreenBusy(false); }
+  }, [onError, syncParticipants]);
+
+  useEffect(() => {
+    if (!screenSharing) { const next = settingsForPreset(preferences.screenQuality); settingsRef.current = next; setScreenSettings(next); }
+  }, [preferences.screenQuality, screenSharing]);
 
   const reconcileTestRef = useRef<() => Promise<void>>(async () => {});
   reconcileTestRef.current = async () => {
@@ -766,6 +923,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
     toggleDeafen,
     toggleCamera,
     toggleScreenShare,
+    availableScreens, watchingScreens, setScreenWatching, screenSettings, screenBusy, changeScreenSettings, changeScreenSource, screenViewers,
     switchInput,
     switchOutput,
     switchCamera,

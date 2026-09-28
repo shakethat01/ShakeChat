@@ -17,6 +17,9 @@ export type AppPreferences = {
   noiseGateThreshold: number;
   voiceInputMode: VoiceInputMode;
   pushToTalkKey: string;
+  channelSounds: boolean;
+  streamSounds: boolean;
+  notificationVolume: number;
 };
 
 export const DEFAULT_PREFERENCES: AppPreferences = {
@@ -32,6 +35,9 @@ export const DEFAULT_PREFERENCES: AppPreferences = {
   noiseGateThreshold: -48,
   voiceInputMode: 'voice_activity',
   pushToTalkKey: 'Backquote',
+  channelSounds: true,
+  streamSounds: true,
+  notificationVolume: 35,
 };
 
 const STORAGE_KEY = 'shakechat.preferences.v10';
@@ -84,6 +90,9 @@ export function loadPreferences(): AppPreferences {
       noiseGateThreshold: clampNoiseGateThreshold(typeof parsed.noiseGateThreshold === 'number' ? parsed.noiseGateThreshold : DEFAULT_PREFERENCES.noiseGateThreshold),
       voiceInputMode: isVoiceInputMode(parsed.voiceInputMode) ? parsed.voiceInputMode : DEFAULT_PREFERENCES.voiceInputMode,
       pushToTalkKey: typeof parsed.pushToTalkKey === 'string' && parsed.pushToTalkKey.trim() ? parsed.pushToTalkKey : DEFAULT_PREFERENCES.pushToTalkKey,
+      channelSounds: typeof parsed.channelSounds === 'boolean' ? parsed.channelSounds : true,
+      streamSounds: typeof parsed.streamSounds === 'boolean' ? parsed.streamSounds : true,
+      notificationVolume: typeof parsed.notificationVolume === 'number' && Number.isFinite(parsed.notificationVolume) ? Math.max(0, Math.min(100, parsed.notificationVolume)) : 35,
     };
   } catch { return DEFAULT_PREFERENCES; }
 }
