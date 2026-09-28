@@ -43,7 +43,9 @@ restore_previous() {
 trap restore_previous ERR
 
 git fetch --prune origin
-git checkout -B release/updater-test "$RELEASE_SHA"
+# Earlier desktop CORS fixes were applied directly on the VPS. They are now in
+# source; the saved local.patch allows rollback without blocking this checkout.
+git checkout -f -B release/updater-test "$RELEASE_SHA"
 git reset --hard "$RELEASE_SHA"
 npm ci
 npm run db:generate
