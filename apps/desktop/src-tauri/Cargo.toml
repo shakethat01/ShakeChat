@@ -1,6 +1,6 @@
 [package]
 name = "shakechat-desktop"
-version = "1.9.10"
+version = "1.9.11"
 description = "ShakeChat desktop client"
 authors = ["ShakeThat"]
 edition = "2021"
