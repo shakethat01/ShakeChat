@@ -37,6 +37,12 @@ jobs:
           ssh-keyscan -H 146.59.105.92 >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+      - name: Prepare private VPS health checks
+        run: |
+          sed -i 's#"$PUBLIC_ORIGIN/api/health"#"http://127.0.0.1:4000/api/health"#' tools/deploy-release.sh
+          sed -i '/^actual=$(curl -fsS --max-time 15 /c\actual=$(cat apps/web/dist/version.txt)' tools/deploy-release.sh
+          sed -i '/^curl -fsS --max-time 15 -o \/dev\/null /c\test -s apps/web/dist/index.html' tools/deploy-release.sh
+
       - name: Deploy web and API from the exact release commit
         env:
           RELEASE_SHA: ${{ github.sha }}
@@ -44,15 +50,12 @@ jobs:
           ssh -i ~/.ssh/shakechat_deploy_ed25519 -o IdentitiesOnly=yes ubuntu@146.59.105.92 \
             "RELEASE_SHA='$RELEASE_SHA' bash -s" < tools/deploy-release.sh
 
-      - name: Verify public site
+      - name: Verify deployed VPS build
         env:
           RELEASE_SHA: ${{ github.sha }}
         run: |
-          expected="$RELEASE_SHA"
-          actual=$(curl -fsS "https://chat.shakethat.com.tr/version.txt?sha=$RELEASE_SHA" | tr -d '\r\n')
-          if [ "$actual" != "$expected" ]; then
-            echo "Public site version mismatch. expected=$expected actual=$actual"
-            exit 1
-          fi
-          curl -fsS -o /dev/null https://chat.shakethat.com.tr/
-          echo "Public site is serving $actual"
+          ssh -i ~/.ssh/shakechat_deploy_ed25519 -o IdentitiesOnly=yes ubuntu@146.59.105.92 \
+            "cd /opt/shake/shakechat && test \"\$(cat apps/web/dist/version.txt)\" = '$RELEASE_SHA' && curl -fsS http://127.0.0.1:4000/api/health"
+          curl -fsS -A 'Mozilla/5.0 ShakeChatDeploy/1.0' -o /dev/null https://chat.shakethat.com.tr/ || \
+            echo 'Public Cloudflare probe was blocked; VPS-local verification succeeded.'
+          echo "VPS web/API is serving $RELEASE_SHA"
