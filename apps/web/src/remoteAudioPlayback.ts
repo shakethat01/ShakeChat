@@ -27,11 +27,11 @@ export class RemoteAudioPlayback {
       return;
     }
     if (previous) this.remove(previous.track);
-    const source = publication.source === Track.Source.ScreenShareAudio ? 'screen' : 'microphone';
+    const source: PlaybackSource = publication.source === Track.Source.ScreenShareAudio ? 'screen' : 'microphone';
     const element = track.attach();
     element.autoplay = true;
     element.style.display = 'none';
-    const entry = { track, element, identity, source };
+    const entry: Entry = { track, element, identity, source };
     this.entries.set(key, entry);
     this.applyVolume(entry, volumeFor);
     document.body.appendChild(element);
