@@ -1,0 +1,70 @@
+/* ShakeChat 1.9.10 release UI polish */
+
+/* The stop-watching action used to inherit the 31px icon-button width, so the
+   Turkish label was clipped to "İzle…". Keep it readable and visually distinct. */
+.video-tile-actions > button:not([aria-label]) {
+  width: auto !important;
+  min-width: 86px;
+  padding: 0 9px !important;
+  white-space: nowrap;
+  font-size: 9px;
+  font-weight: 900;
+  color: #ffd09a;
+  border-color: #70431f !important;
+  background: rgba(43, 28, 17, .94) !important;
+}
+.video-tile-actions > button:not([aria-label]):hover {
+  color: #fff0dc;
+  border-color: #a8652b !important;
+  background: rgba(63, 39, 21, .97) !important;
+}
+
+/* Live quality controls stay available without covering so much of the stream. */
+.live-publish-controls {
+  right: auto !important;
+  width: auto;
+  max-width: calc(100% - 24px);
+  padding: 6px 8px !important;
+  gap: 6px !important;
+  border-radius: 8px !important;
+  background: rgba(12, 14, 18, .86) !important;
+  backdrop-filter: blur(10px);
+  opacity: .72;
+  transition: opacity .14s ease, background .14s ease;
+}
+.live-publish-controls:hover,
+.live-publish-controls:focus-within {
+  opacity: 1;
+  background: rgba(12, 14, 18, .96) !important;
+}
+.live-publish-controls label {
+  gap: 4px !important;
+  font-size: 9px !important;
+  color: #9fa5af;
+}
+.live-publish-controls select,
+.live-publish-controls button {
+  min-height: 28px;
+  padding: 4px 7px !important;
+  font-size: 9px;
+}
+.live-publish-controls small {
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .video-tile-actions {
+    gap: 4px;
+    flex-wrap: nowrap !important;
+    max-width: none !important;
+  }
+  .video-tile-actions > button:not([aria-label]) {
+    min-width: 74px;
+    padding: 0 7px !important;
+    font-size: 8px;
+  }
+  .live-publish-controls small {
+    display: none;
+  }
+}
