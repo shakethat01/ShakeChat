@@ -17,6 +17,7 @@ export function useChat(authed: boolean, serverId: string, channelId: string, us
   selection.current = channelId;
   const lastTyping = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const presenceOfflineTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
   const onServerRemovedRef = useRef(onServerRemoved);
@@ -32,6 +33,8 @@ export function useChat(authed: boolean, serverId: string, channelId: string, us
     let recent: Message[] = [];
     setMessages([]); setMembers([]); setTypingUsers({});
     const sync = () => {
+      clearTimeout(presenceOfflineTimer.current);
+      presenceOfflineTimer.current = undefined;
       const attempt = ++generation;
       const valid = () => active && generation === attempt;
       setSocketOnline(true);
@@ -56,7 +59,15 @@ export function useChat(authed: boolean, serverId: string, channelId: string, us
     const disconnect = () => {
       generation++;
       setSocketOnline(false); setLoading(false); setTypingUsers({});
-      setMembers(previous => previous.map(m => ({ ...m, online: false })));
+      // Socket.IO can reconnect within a second or two. Marking everyone offline
+      // immediately makes the whole member list flash grey even though nobody
+      // actually left. Keep the last known presence during a short reconnect and
+      // only fall back to offline if the realtime connection stays down.
+      clearTimeout(presenceOfflineTimer.current);
+      presenceOfflineTimer.current = setTimeout(() => {
+        if (!active || socket.connected) return;
+        setMembers(previous => previous.map(m => ({ ...m, online: false })));
+      }, 8000);
     };
     const connectionError = (e: Error) => { disconnect(); onErrorRef.current(e.message); };
     const received = (message: Message) => {
@@ -125,7 +136,7 @@ export function useChat(authed: boolean, serverId: string, channelId: string, us
       return entries.length === Object.keys(previous).length ? previous : Object.fromEntries(entries);
     }), 500);
     return () => {
-      active = false; generation++; clearInterval(expiry); clearTimeout(timer.current);
+      active = false; generation++; clearInterval(expiry); clearTimeout(timer.current); clearTimeout(presenceOfflineTimer.current);
       if (socket.connected) socket.emit('typing', { channelId, typing: false });
       socket.off('connect', sync); socket.off('disconnect', disconnect); socket.off('connect_error', connectionError);
       socket.off('message:new', received); socket.off('message:updated', updated); socket.off('message:deleted', deleted); socket.off('typing', typing); socket.off('presence:update', presence);
