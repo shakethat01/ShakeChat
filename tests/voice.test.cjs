@@ -34,30 +34,64 @@ test('voice token uses opaque user identity and SPEAK permission',async()=>{
   assert.equal(calls.require.length,2);
 });
 
+test('screen token uses an isolated technical identity and requires speaking permission',async()=>{
+  const {service}=fixture();
+  const result=await service.createScreenToken('alice','voice');
+  assert.equal(result.identity,'screen:alice');
+  assert.equal(result.ownerId,'alice');
+  assert.equal(result.room,'shakechat-voice');
+  assert.equal(typeof result.token,'string');
+  const {service:listenOnly}=fixture({permissions:['VIEW_CHANNEL','CONNECT_VOICE']});
+  await assert.rejects(()=>listenOnly.createScreenToken('alice','voice'),/yayın açma yetkin yok/);
+});
+
 test('voice token is listen-only when SPEAK is missing',async()=>{
   const {service}=fixture({permissions:['VIEW_CHANNEL','CONNECT_VOICE']});
   const result=await service.createJoinToken('alice','voice');
   assert.equal(result.canSpeak,false);
 });
 
-test('text channels cannot mint voice tokens',async()=>{
+test('text channels cannot mint voice or screen tokens',async()=>{
   const {service}=fixture({type:'TEXT'});
   await assert.rejects(()=>service.createJoinToken('alice','text'),/Ses kanalı bulunamadı/);
+  await assert.rejects(()=>service.createScreenToken('alice','text'),/Ses kanalı bulunamadı/);
 });
 
-test('revoked CONNECT_VOICE removes connected participant',async()=>{
+test('revoked CONNECT_VOICE removes voice and native screen participants',async()=>{
   const {service,calls}=fixture({permissions:['VIEW_CHANNEL']});
   await service.refreshServerAccess('friends',['alice']);
-  assert.deepEqual(calls.removed,[{room:'shakechat-voice',identity:'alice'}]);
+  assert.deepEqual(calls.removed,[
+    {room:'shakechat-voice',identity:'alice'},
+    {room:'shakechat-voice',identity:'screen:alice'},
+  ]);
   assert.equal(calls.updated.length,0);
 });
 
-test('SPEAK change updates LiveKit publish permission without disconnecting',async()=>{
+test('SPEAK change updates the voice participant and closes a screen publisher',async()=>{
   const {service,calls}=fixture({permissions:['VIEW_CHANNEL','CONNECT_VOICE']});
   await service.refreshServerAccess('friends',['alice']);
-  assert.equal(calls.removed.length,0);
+  assert.deepEqual(calls.removed,[{room:'shakechat-voice',identity:'screen:alice'}]);
   assert.equal(calls.updated.length,1);
+  assert.equal(calls.updated[0].identity,'alice');
   assert.equal(calls.updated[0].options.permission.canPublish,false);
+});
+
+test('channel roster merges the technical native screen publisher into its owner',async()=>{
+  const {service}=fixture();
+  service.prisma.serverMember={findUnique:async()=>({id:'member'})};
+  service.roomClient.listParticipants=async()=>[
+    {identity:'alice',name:'Alice',tracks:[{source:2,muted:false}]},
+    {identity:'screen:alice',name:'Alice',tracks:[{source:3,muted:false}]},
+  ];
+  // TrackSource enum values are supplied by the SDK at runtime; use the SDK names when available in the compiled service.
+  const {TrackSource}=require('livekit-server-sdk');
+  service.roomClient.listParticipants=async()=>[
+    {identity:'alice',name:'Alice',tracks:[{source:TrackSource.MICROPHONE,muted:false}]},
+    {identity:'screen:alice',name:'Alice',tracks:[{source:TrackSource.SCREEN_SHARE,muted:false}]},
+  ];
+  const row=(await service.participantsInServer('alice','friends')).channels[0];
+  assert.equal(row.participants.length,1);
+  assert.deepEqual(row.participants[0],{identity:'alice',name:'Alice',muted:false,screen:true});
 });
 
 test('channel roster checks membership and VIEW_CHANNEL before querying LiveKit, even with cached rooms',async()=>{
