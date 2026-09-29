@@ -9,6 +9,8 @@ import { RemoteAudioPlayback, type PlaybackSource } from './remoteAudioPlayback'
 import { applyScreenSettings, replaceScreenSource, screenOptions, settingsForPreset, type ScreenSettings } from './screenShareControl';
 import { playVoiceSound, type VoiceSound } from './voiceNotifications';
 import { isMicrophoneTestActive, registerMicrophoneTestIsolation } from './microphoneTestIsolation';
+import { isNativeScreenIdentity, nativeScreenIdentity, screenOwner } from './screenIdentity';
+import { isMicrophonePermissionError, microphoneErrorMessage } from './microphoneAccess';
 
 export type VoiceParticipant = {
   identity: string;
@@ -26,6 +28,7 @@ export type VoiceVideoTrack = {
   name: string;
   local: boolean;
   source: 'camera' | 'screen';
+  native?: boolean;
   publication: TrackPublication;
 };
 
@@ -106,6 +109,8 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
   const [participants, setParticipants] = useState<VoiceParticipant[]>([]);
   const [videoTracks, setVideoTracks] = useState<VoiceVideoTrack[]>([]);
   const [muted, setMuted] = useState(true);
+  const [microphoneError, setMicrophoneError] = useState('');
+  const [microphonePermissionDenied, setMicrophonePermissionDenied] = useState(false);
   const [deafened, setDeafened] = useState(false);
   const [cameraEnabled, setCameraEnabled] = useState(false);
   const [screenSharing, setScreenSharing] = useState(false);
@@ -130,17 +135,20 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
   };
 
   const sendWatchState = useCallback((room: Room, identity: string, watching: boolean) => {
-    const publication = room.remoteParticipants.get(identity)?.getTrackPublication(Track.Source.ScreenShare);
+    const owner = screenOwner(identity);
+    if (owner === room.localParticipant.identity) return;
+    const publication = (room.remoteParticipants.get(nativeScreenIdentity(owner)) ?? room.remoteParticipants.get(owner))?.getTrackPublication(Track.Source.ScreenShare);
     if (!publication) return;
     const payload = new TextEncoder().encode(JSON.stringify({ type: 'watch', sid: publication.trackSid, watching }));
-    void room.localParticipant.publishData?.(payload, { reliable: true, topic: 'shakechat.watch.v1', destinationIdentities: [identity] }).catch(() => undefined);
+    void room.localParticipant.publishData?.(payload, { reliable: true, topic: 'shakechat.watch.v1', destinationIdentities: [owner] }).catch(() => undefined);
   }, []);
 
   const syncSubscriptions = useCallback((room: Room) => {
     for (const participant of room.remoteParticipants.values()) {
       for (const publication of participant.trackPublications?.values() ?? []) {
         const screen = publication.source === Track.Source.ScreenShare || publication.source === Track.Source.ScreenShareAudio;
-        const desired = !screen || watchingRef.current.has(participant.identity);
+        const self = screenOwner(participant.identity) === room.localParticipant.identity;
+        const desired = self ? publication.source === Track.Source.ScreenShare : !screen || watchingRef.current.has(participant.identity);
         if (subscriptionIntentRef.current.get(publication.trackSid) === desired) continue;
         subscriptionIntentRef.current.set(publication.trackSid, desired);
         publication.setSubscribed(desired);
@@ -155,7 +163,8 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
   }, []);
 
   const playbackVolume = useCallback((identity: string, source: PlaybackSource) => {
-    if (deafenedRef.current) return 0;
+    if (deafenedRef.current || (source === 'screen' && screenOwner(identity) === roomRef.current?.localParticipant.identity)) return 0;
+    identity = screenOwner(identity);
     const muted = source === 'screen' ? screenMutedRef.current : locallyMutedRef.current;
     const volumes = source === 'screen' ? screenVolumesRef.current : participantVolumesRef.current;
     return muted.has(identity) ? 0 : clampVoiceVolume(volumes[identity] ?? 100) / 100;
@@ -206,9 +215,23 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       await room.localParticipant.setMicrophoneEnabled(false);
       return;
     }
-    const publication = await room.localParticipant.setMicrophoneEnabled(true, microphoneCaptureOptions(deviceId ?? (room.getActiveDevice('audioinput') || undefined)), MICROPHONE_PUBLISH_OPTIONS);
-    if (roomRef.current !== room) return;
-    if (publication) await applyMicrophoneTuning(room, publication);
+    try {
+      const publication = await room.localParticipant.setMicrophoneEnabled(true, microphoneCaptureOptions(deviceId ?? (room.getActiveDevice('audioinput') || undefined)), MICROPHONE_PUBLISH_OPTIONS);
+      if (roomRef.current !== room) return;
+      if (publication) await applyMicrophoneTuning(room, publication);
+      if (roomRef.current !== room) return;
+      setMicrophoneError(''); setMicrophonePermissionDenied(false);
+    } catch (error) {
+      if (roomRef.current === room) {
+        // A failed processor/capture must not leave an unprocessed microphone live.
+        await room.localParticipant.setMicrophoneEnabled(false).catch(() => undefined);
+        if (roomRef.current !== room) return;
+        setMuted(true); setMicrophoneTrack(null);
+        setMicrophoneError(microphoneErrorMessage(error));
+        setMicrophonePermissionDenied(isMicrophonePermissionError(error));
+      }
+      throw error;
+    }
     // Isolation can be requested while getUserMedia / processor.init is awaiting.
     if (isMicrophoneTestActive() || deafenedRef.current) await room.localParticipant.setMicrophoneEnabled(false);
   }), [applyMicrophoneTuning, microphoneCaptureOptions, queueMicrophoneOperation]);
@@ -245,7 +268,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       if (screen && !screen.isMuted) {
         const item: VoiceVideoTrack = { id: `${participant.identity}:screen:${screen.trackSid}`, identity: participant.identity, name: participant.name || participant.identity, local: participant.isLocal, source: 'screen', publication: screen };
         nextScreens.push(item);
-        if (!participant.isLocal && !watchingRef.current.has(participant.identity)) continue;
+        if (!participant.isLocal && screenOwner(participant.identity) !== room.localParticipant.identity && !watchingRef.current.has(participant.identity)) continue;
         if (!publicationIsActive(screen)) continue;
         if (!participant.isLocal && screen instanceof RemoteTrackPublication) {
           // Receiving quality must not depend on this viewer's own publishing
@@ -320,6 +343,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
     setVideoTracks([]);
     setCanSpeak(false);
     setMuted(true);
+    setMicrophoneError(''); setMicrophonePermissionDenied(false);
     setCameraEnabled(false);
     setScreenSharing(false);
     pttHeldRef.current = false;
@@ -344,7 +368,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       const credentials = await api.voiceToken(nextChannelId);
       if (operation !== operationRef.current) return;
       const [inputs, outputs] = await Promise.all([
-        Room.getLocalDevices('audioinput', false), Room.getLocalDevices('audiooutput', false),
+        Room.getLocalDevices('audioinput', false).catch(() => []), Room.getLocalDevices('audiooutput', false).catch(() => []),
       ]);
       if (operation !== operationRef.current) return;
       const input = inputs.some(device => device.deviceId === devicesRef.current.audioinput) ? devicesRef.current.audioinput : '';
@@ -368,10 +392,11 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       channelRef.current = nextChannelId;
 
       const sync = () => syncParticipants(room);
-      room.on(RoomEvent.ParticipantConnected, () => { if (roomRef.current !== room) return; if (readyRef.current) soundRef.current('join'); sync(); });
+      room.on(RoomEvent.ParticipantConnected, participant => { if (roomRef.current !== room) return; if (readyRef.current && !isNativeScreenIdentity(participant?.identity ?? '')) soundRef.current('join'); sync(); });
       room.on(RoomEvent.ParticipantDisconnected, participant => {
         if (roomRef.current !== room) return;
-        if (readyRef.current) soundRef.current('leave');
+        if (readyRef.current && !isNativeScreenIdentity(participant.identity)) soundRef.current('leave');
+        if (participant.identity === nativeScreenIdentity(room.localParticipant.identity)) { viewersRef.current.clear(); }
         watchingRef.current.delete(participant.identity); viewersRef.current.delete(participant.identity);
         setWatchingScreens([...watchingRef.current]); setScreenViewers([...viewersRef.current]);
         playbackRef.current.removeParticipant(participant.identity);
@@ -380,15 +405,20 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       room.on(RoomEvent.ActiveSpeakersChanged, sync);
       room.on(RoomEvent.TrackMuted, sync);
       room.on(RoomEvent.TrackUnmuted, sync);
-      room.on(RoomEvent.TrackPublished, publication => {
+      room.on(RoomEvent.TrackPublished, (publication, participant) => {
         if (roomRef.current !== room) return;
         if (readyRef.current && publication.source === Track.Source.ScreenShare) soundRef.current('stream-start');
+        if (publication.source === Track.Source.ScreenShare && participant?.identity === nativeScreenIdentity(room.localParticipant.identity)) {
+          viewersRef.current.clear(); setScreenViewers([]);
+          void room.localParticipant.publishData?.(new TextEncoder().encode('{"type":"query"}'), { reliable: true, topic: 'shakechat.watch.v1' }).catch(() => undefined);
+        }
         sync();
       });
       room.on(RoomEvent.TrackUnpublished, (publication, participant) => {
         if (roomRef.current !== room) return;
         subscriptionIntentRef.current.delete(publication.trackSid);
         if (publication.source === Track.Source.ScreenShare) {
+          if (participant.identity === nativeScreenIdentity(room.localParticipant.identity)) { viewersRef.current.clear(); setScreenViewers([]); }
           if (readyRef.current) soundRef.current('stream-stop');
           watchingRef.current.delete(participant.identity); setWatchingScreens([...watchingRef.current]);
           playbackRef.current.removeParticipant(participant.identity, 'screen');
@@ -413,10 +443,12 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
         try {
           const data = JSON.parse(new TextDecoder().decode(payload));
           if (data.type === 'query') {
-            if (watchingRef.current.has(participant.identity) && participant.getTrackPublication(Track.Source.ScreenShare)?.isSubscribed) sendWatchState(room, participant.identity, true);
+            const publisher = room.remoteParticipants.get(nativeScreenIdentity(participant.identity)) ?? participant;
+            if (watchingRef.current.has(publisher.identity) && publisher.getTrackPublication(Track.Source.ScreenShare)?.isSubscribed) sendWatchState(room, publisher.identity, true);
             return;
           }
-          const publication = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+          const publication = room.localParticipant.getTrackPublication(Track.Source.ScreenShare) ?? room.remoteParticipants.get(nativeScreenIdentity(room.localParticipant.identity))?.getTrackPublication(Track.Source.ScreenShare);
+          if (isNativeScreenIdentity(participant.identity) || participant.identity === room.localParticipant.identity) return;
           if (data.type !== 'watch' || data.sid !== publication?.trackSid || typeof data.watching !== 'boolean') return;
           const existed = viewersRef.current.has(participant.identity);
           if (data.watching) viewersRef.current.add(participant.identity); else viewersRef.current.delete(participant.identity);
@@ -443,7 +475,8 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
         if (roomRef.current !== room) return;
         const screen = publication.source === Track.Source.ScreenShare || publication.source === Track.Source.ScreenShareAudio;
-        if (screen && !watchingRef.current.has(participant.identity)) { publication.setSubscribed(false); return; }
+        const self = screenOwner(participant.identity) === room.localParticipant.identity;
+        if (screen && ((self && publication.source === Track.Source.ScreenShareAudio) || (!self && !watchingRef.current.has(participant.identity)))) { publication.setSubscribed(false); return; }
         if (publication.source === Track.Source.ScreenShare) sendWatchState(room, participant.identity, true);
         if (track.kind === Track.Kind.Audio) {
           playbackRef.current.attach(track as RemoteAudioTrack, publication, participant.identity, playbackVolume);
@@ -498,7 +531,11 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       setCanSpeak(credentials.canSpeak);
       if (credentials.canSpeak) {
         const openMic = inputModeRef.current === 'voice_activity' && !userMutedRef.current && !deafenedRef.current;
-        await setMicrophone(room, openMic, input);
+        // Room access and microphone capture are independent. A denied/missing
+        // microphone must still allow this authorized member to listen.
+        try { await setMicrophone(room, openMic, input); }
+        catch { /* The persistent microphone notice offers recovery in this room. */ }
+        if (operation !== operationRef.current || roomRef.current !== room) return;
         setMuted(!room.localParticipant.isMicrophoneEnabled);
       } else {
         setMuted(true);
@@ -507,7 +544,9 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       setStatus('connected');
       readyRef.current = true; soundRef.current('join');
       try { await room.startAudio(); } catch { /* User can retry through a control click. */ }
-      await refreshDevices(true);
+      // Enumerating after join must not trigger a second microphone prompt,
+      // especially for muted or listen-only members.
+      await refreshDevices(false);
       sync();
     } catch (error) {
       if (operation !== operationRef.current) return;
@@ -538,7 +577,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
     if (!canSpeak) { onError('Bu ses kanalında konuşma yetkin yok.'); return; }
     if (preferences.voiceInputMode === 'push_to_talk') { onError(`Bas-konuş etkin. ${pushToTalkKeyLabel(preferences.pushToTalkKey)} tuşunu basılı tut.`); return; }
     try {
-      const enable = userMutedRef.current;
+      const enable = isMicrophoneTestActive() ? userMutedRef.current : !room.localParticipant.isMicrophoneEnabled;
       if (enable && deafenedRef.current) { onError('Önce sağırlaştırmayı kapat.'); return; }
       userMutedRef.current = !enable;
       setMicrophoneMutedPreference(!enable);
@@ -546,8 +585,27 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
       await setMicrophone(room, enable, inputDeviceId || undefined);
       setMuted(!room.localParticipant.isMicrophoneEnabled);
       syncParticipants(room);
-    } catch (error) { onError(error instanceof Error ? error.message : 'Mikrofon durumu değiştirilemedi.'); }
+    } catch (error) { onError(microphoneErrorMessage(error)); }
   }, [canSpeak, inputDeviceId, muted, onError, preferences.pushToTalkKey, preferences.voiceInputMode, setMicrophone, syncParticipants]);
+
+  const retryMicrophone = useCallback(async () => {
+    const room = roomRef.current;
+    if (!room || !canSpeak) return;
+    try {
+      // A local permission probe never publishes audio, including in PTT mode.
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: microphoneCaptureOptions(inputDeviceId || undefined) });
+      stream.getTracks().forEach(track => track.stop());
+      if (roomRef.current !== room) return;
+      setMicrophoneError(''); setMicrophonePermissionDenied(false);
+      const open = inputModeRef.current === 'voice_activity' && !userMutedRef.current && !deafenedRef.current;
+      await setMicrophone(room, open);
+      if (roomRef.current !== room) return;
+      await refreshDevices(false); syncParticipants(room);
+    } catch (error) {
+      if (roomRef.current !== room) return;
+      setMicrophoneError(microphoneErrorMessage(error)); setMicrophonePermissionDenied(isMicrophonePermissionError(error));
+    }
+  }, [canSpeak, inputDeviceId, microphoneCaptureOptions, refreshDevices, setMicrophone, syncParticipants]);
 
   const toggleDeafen = useCallback(async () => {
     const next = !deafenedRef.current;
@@ -756,7 +814,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
             return;
           }
         }
-        onError(error instanceof Error ? error.message : 'Mikrofon değiştirilemedi.');
+        onError(microphoneErrorMessage(error));
       }
     });
   }, [applyMicrophoneTuning, onError, queueMicrophoneOperation, syncParticipants]);
@@ -792,6 +850,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
   }, [playbackVolume]);
 
   const setScreenVolume = useCallback((identity: string, value: number) => {
+    identity = screenOwner(identity);
     const next = { ...screenVolumesRef.current, [identity]: clampVoiceVolume(value) };
     screenVolumesRef.current = next;
     persistVoiceVolumes(next, SCREEN_VOLUME_STORAGE_KEY);
@@ -800,6 +859,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
   }, [playbackVolume]);
 
   const toggleScreenLocalMute = useCallback((identity: string) => {
+    identity = screenOwner(identity);
     const next = new Set(screenMutedRef.current);
     if (next.has(identity)) next.delete(identity); else next.add(identity);
     screenMutedRef.current = next;
@@ -898,6 +958,8 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
     participants,
     videoTracks,
     muted,
+    microphoneError,
+    microphonePermissionDenied,
     deafened,
     cameraEnabled,
     screenSharing,
@@ -920,6 +982,7 @@ export function useVoice(enabled: boolean, onError: (message: string) => void, p
     join,
     leave,
     toggleMute,
+    retryMicrophone,
     toggleDeafen,
     toggleCamera,
     toggleScreenShare,

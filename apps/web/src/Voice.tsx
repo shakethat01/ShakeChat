@@ -5,6 +5,7 @@ import { VoiceParticipant, VoiceVideoTrack } from './useVoice';
 import { StreamStats } from './streamStats';
 import { SCREEN_HEIGHTS, SCREEN_FRAME_RATES, type ScreenSettings } from './screenShareControl';
 import { VoiceInputMode, pushToTalkKeyLabel } from './preferences';
+import { MicrophoneAccessHelp } from './MicrophoneAccessHelp';
 
 type VoiceState = {
   status:'disconnected'|'connecting'|'connected'|'reconnecting';
@@ -20,6 +21,8 @@ type VoiceState = {
   changeScreenSettings:(settings:ScreenSettings)=>Promise<void>;
   changeScreenSource:()=>Promise<void>;
   muted:boolean;
+  microphoneError?:string;
+  microphonePermissionDenied?:boolean;
   deafened:boolean;
   cameraEnabled:boolean;
   screenSharing:boolean;
@@ -42,6 +45,7 @@ type VoiceState = {
   join:(channelId:string)=>Promise<void>;
   leave:()=>Promise<void>;
   toggleMute:()=>Promise<void>;
+  retryMicrophone?:()=>Promise<void>;
   toggleDeafen:()=>Promise<void>;
   toggleCamera:()=>Promise<void>;
   toggleScreenShare:()=>Promise<void>;
@@ -85,13 +89,14 @@ function VideoTile({item,featured,onToggleFeature,voice}:{item:VoiceVideoTrack;f
     const updateMetrics=async()=>{
       if(updating)return;updating=true;
       try{
-        const value=sampler.sample(await track.getRTCStatsReport?.(),item.local);
-        const capture=item.local?track.mediaStreamTrack?.getSettings?.():undefined;
+        const localCapture=item.local&&!item.native;
+        const value=sampler.sample(await track.getRTCStatsReport?.(),localCapture);
+        const capture=localCapture?track.mediaStreamTrack?.getSettings?.():undefined;
         const parts:string[]=[];
         const size=value.width&&value.height?`${value.width}×${value.height}`:'ölçülüyor';
-        parts.push(`${item.local?'Gönderim':'Alım'}: ${size}${value.fps===undefined?'':` · ${value.fps} FPS`}`);
+        parts.push(`${localCapture?'Gönderim':item.local?'Önizleme alımı':'Alım'}: ${size}${value.fps===undefined?'':` · ${value.fps} FPS`}`);
         if(item.local&&capture?.frameRate!==undefined)parts.push(`Yakalama: ${Math.round(capture.frameRate)} FPS`);
-        if(!item.local&&typeof element.requestVideoFrameCallback==='function'){
+        if(!localCapture&&typeof element.requestVideoFrameCallback==='function'){
           const now=performance.now();const seconds=(now-lastFrameTime)/1000;
           if(seconds>=0.5){parts.push(`Görüntü: ${Math.round((renderedFrames-lastFrameCount)/seconds)} FPS`);lastFrameCount=renderedFrames;lastFrameTime=now}
         }
@@ -104,7 +109,7 @@ function VideoTile({item,featured,onToggleFeature,voice}:{item:VoiceVideoTrack;f
     void updateMetrics();
     const timer=window.setInterval(()=>void updateMetrics(),1000);
     return()=>{stopped=true;window.clearInterval(timer);if(frameHandle!==undefined)element.cancelVideoFrameCallback?.(frameHandle);try{track.detach(element)}catch{/* Track may already be unpublished. */}};
-  },[item.publication,item.local,item.publication.videoTrack]);
+  },[item.publication,item.local,item.native,item.publication.videoTrack]);
 
   async function fullscreen(){
     const shell=shellRef.current;
@@ -195,6 +200,7 @@ export function VoicePanel({channelId,channelName,voice,onJoin}:{channelId:strin
   const videos=[...screens,...cameras].sort((a,b)=>Number(b.id===featuredId)-Number(a.id===featuredId));
   return <div className="voice-stage">
     <div className="voice-hero"><div><span className={`voice-status-dot ${voice.status==='connected'?'on':''}`}/><small>{voice.status==='reconnecting'?'Yeniden bağlanıyor':'SES & VİDEO BAĞLANTISI'}</small><h2>{channelName}</h2><p>{voice.participants.length} kişi bağlı{liveCount?` · ${liveCount} yayın canlı`:voice.videoTracks.length?` · ${voice.videoTracks.length} görüntü`:''}</p></div><button className="danger-btn" onClick={()=>void voice.leave()}><PhoneOff size={18}/> Bağlantıyı kes</button></div>
+    {voice.microphoneError&&<div className="mic-access-notice"><p role="status">Mikrofon kapalı olarak kanaldasın; diğerlerini dinleyebilirsin. {voice.microphoneError}</p>{voice.microphonePermissionDenied?<MicrophoneAccessHelp onRetry={voice.retryMicrophone??voice.toggleMute}/>:<button type="button" onClick={()=>void (voice.retryMicrophone??voice.toggleMute)()}>Mikrofonu yeniden dene</button>}</div>}
 
     {(voice.availableScreens??[]).some(item=>!item.local&&!voice.watchingScreens?.includes(item.identity))&&<div className="available-streams" aria-label="İzlenebilir yayınlar">{(voice.availableScreens??[]).filter(item=>!item.local&&!voice.watchingScreens?.includes(item.identity)).map(item=><div className="available-stream" key={item.id}><MonitorUp size={22}/><div><b>{item.name}</b><small>Ekran paylaşıyor</small></div><button type="button" className="primary compact" onClick={()=>voice.setScreenWatching(item.identity,true)}>Yayını izle</button></div>)}</div>}
     {(voice.availableScreens??[]).filter(item=>!item.local&&voice.watchingScreens?.includes(item.identity)&&!voice.videoTracks.some(track=>track.id===item.id)).map(item=><div className="stream-connecting" role="status" key={item.id}>{item.name} · Yayına bağlanılıyor… <button type="button" onClick={()=>voice.setScreenWatching(item.identity,false)}>İzlemeyi bırak</button></div>)}

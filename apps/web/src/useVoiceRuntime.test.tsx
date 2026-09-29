@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
-import { act, cleanup, renderHook } from '@testing-library/react';
+import { act, cleanup, fireEvent, renderHook, screen as ui, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Room } from 'livekit-client';
 import { DEFAULT_PREFERENCES } from './preferences';
 import { useVoiceRuntime } from './useVoiceRuntime';
 import { acquireMicrophoneTestIsolation, isMicrophoneTestActive } from './microphoneTestIsolation';
 
-const state=vi.hoisted(()=>({rooms:[] as any[],screenPicker:null as null|(()=>Promise<void>), errors:vi.fn(), meter:vi.fn(), sounds:vi.fn()}));
+const state=vi.hoisted(()=>({rooms:[] as any[],screenPicker:null as null|(()=>Promise<void>), errors:vi.fn(), meter:vi.fn(), sounds:vi.fn(), micError:null as Error|null, native:vi.fn(), token:vi.fn(async()=>({url:'wss://test',token:'test',canSpeak:true}))}));
 vi.mock('./voiceNotifications',()=>({playVoiceSound:(...args:any[])=>state.sounds(...args)}));
-vi.mock('./api',()=>({api:{voiceToken:vi.fn(async()=>({url:'wss://test',token:'test',canSpeak:true}))}}));
+vi.mock('./api',()=>({api:{voiceToken:state.token},API_ORIGIN:'https://test',auth:{token:()=> 'session'}}));
+vi.mock('@tauri-apps/api/core',()=>({invoke:(...args:any[])=>state.native(...args)}));
 vi.mock('./useLocalMicActivity',()=>({useLocalMicActivity:(track:any)=>{
   state.meter(track);return {available:true,speaking:Boolean(track)};
 }}));
@@ -51,6 +52,7 @@ vi.mock('livekit-client',()=>{
         getTrackPublication:(source:string)=>source===Source.Microphone?this.mic:source===Source.Camera?this.camera:source===Source.ScreenShareAudio?this.screenAudio:this.screen,
         setMicrophoneEnabled:vi.fn(async(enabled:boolean,capture:any)=>{
           if(enabled){
+            if(state.micError)throw state.micError;
             this.mic ||= {track:new LocalAudioTrack(),isMuted:false};
             if(capture?.deviceId)this.active.audioinput=capture.deviceId.exact;
           }
@@ -83,12 +85,17 @@ vi.mock('livekit-client',()=>{
 });
 
 beforeEach(()=>{
+  vi.clearAllMocks();vi.spyOn(Room,'getLocalDevices');
   localStorage.clear();state.rooms=[];state.screenPicker=null;state.errors.mockClear();state.meter.mockClear();state.sounds.mockClear();
+  state.micError=null;state.token.mockResolvedValue({url:'wss://test',token:'test',canSpeak:true});
+  state.native.mockReset();
+  state.native.mockImplementation(async(command:string)=>command==='native_screen_sources'?[{id:'1',title:'Ekran 1',kind:'screen'}]:undefined);
   (window as any).__TAURI_INTERNALS__={};
+  HTMLDialogElement.prototype.showModal=vi.fn(function(this:HTMLDialogElement){this.open=true});HTMLDialogElement.prototype.close=vi.fn(function(this:HTMLDialogElement){this.open=false});
   vi.spyOn(HTMLMediaElement.prototype,'pause').mockImplementation(()=>{});
 });
 const testReleases:(()=>Promise<void>)[]=[];
-afterEach(async()=>{for(const release of testReleases.splice(0))await act(async()=>{await release()});cleanup();vi.restoreAllMocks();delete (window as any).__TAURI_INTERNALS__});
+afterEach(async()=>{for(const release of testReleases.splice(0))await act(async()=>{await release()});cleanup();await act(async()=>{await Promise.resolve()});vi.restoreAllMocks();vi.unstubAllGlobals();delete (window as any).__TAURI_INTERNALS__});
 async function join(preferences=DEFAULT_PREFERENCES){
   const hook=renderHook(()=>useVoiceRuntime(true,state.errors,preferences));
   await act(async()=>{await hook.result.current.join('room')});
@@ -372,4 +379,164 @@ it('disables duplicate browser noise suppression while RNNoise stays enabled',as
   expect(room.options.audioCaptureDefaults.noiseSuppression).toBe(false);
   expect(room.mic.track.applyConstraints).toHaveBeenLastCalledWith({echoCancellation:true,noiseSuppression:false,autoGainControl:false});
   expect(room.mic.track.getProcessor().name).toBe('shakechat-rnnoise-gate');
+});
+
+
+it('keeps an authorized member listening after microphone permission denial and retries in the same room',async()=>{
+  state.micError=new DOMException('Permission denied','NotAllowedError');
+  const {result}=await join();const room=state.rooms[0];
+  expect(result.current.status).toBe('connected');
+  expect(result.current.microphonePermissionDenied).toBe(true);
+  expect(result.current.muted).toBe(true);
+  expect(room.startAudio).toHaveBeenCalled();expect(room.disconnect).not.toHaveBeenCalled();
+  expect(Room.getLocalDevices).not.toHaveBeenCalledWith('audioinput',true);
+  state.micError=null;
+  await act(async()=>{await result.current.toggleMute()});
+  expect(result.current.muted).toBe(false);expect(result.current.microphoneError).toBe('');
+  expect(state.rooms).toHaveLength(1);
+});
+
+it('does not ask listen-only members for microphone permission or grant them publishing',async()=>{
+  state.token.mockResolvedValueOnce({url:'wss://test',token:'test',canSpeak:false});
+  const {result}=await join();const room=state.rooms[0];
+  expect(result.current.status).toBe('connected');expect(result.current.canSpeak).toBe(false);
+  expect(room.localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
+  expect(Room.getLocalDevices).not.toHaveBeenCalledWith('audioinput',true);
+  await act(async()=>{await result.current.toggleMute()});
+  expect(room.localParticipant.isMicrophoneEnabled).toBe(false);
+});
+
+it('still rejects a server-side channel permission denial',async()=>{
+  state.token.mockRejectedValueOnce(new Error('Bu ses kanalına bağlanma yetkin yok.'));
+  const {result}=await join();
+  expect(result.current.status).toBe('disconnected');expect(state.rooms).toHaveLength(0);
+  expect(state.errors).toHaveBeenCalledWith('Bu ses kanalına bağlanma yetkin yok.');
+});
+
+it('survives unavailable device enumeration without clearing the saved device choice',async()=>{
+  vi.spyOn(Room,'getLocalDevices').mockRejectedValue(new DOMException('Permission denied','NotAllowedError'));
+  localStorage.setItem('shakechat.voice-devices.v1',JSON.stringify({audioinput:'mic-2',audiooutput:'speaker-2'}));
+  state.micError=new DOMException('Permission denied','NotAllowedError');
+  const {result}=await join();
+  expect(result.current.status).toBe('connected');
+  expect(JSON.parse(localStorage.getItem('shakechat.voice-devices.v1')!).audioinput).toBe('mic-2');
+});
+
+it('merges native publishers for browser viewers and preserves separate microphone/stream volume',async()=>{
+  const {result}=await join();const room=state.rooms[0];
+  const bob=addRemote(room,'bob'),native=addRemote(room,'screen:bob');
+  room.remoteParticipants.get('bob').getTrackPublication=(source:string)=>source==='microphone'?bob.mic:undefined;
+  await act(async()=>{room.emit('TrackPublished',native.screen,native.participant)});
+  expect(result.current.participants.map(p=>p.identity)).toEqual(['me','bob']);
+  expect(result.current.availableScreens[0].identity).toBe('bob');
+  expect(native.audio.setSubscribed).toHaveBeenLastCalledWith(false);
+  const mic=remoteAudio('mic'),audio=remoteAudio('native');
+  await act(async()=>{
+    result.current.setScreenWatching('bob',true);
+    room.emit('TrackSubscribed',mic,bob.mic,bob.participant);
+    room.emit('TrackSubscribed',audio,native.audio,native.participant);
+    result.current.setParticipantVolume('bob',25);result.current.setScreenVolume('bob',65);
+  });
+  expect(native.audio.setSubscribed).toHaveBeenLastCalledWith(true);
+  expect(mic.setVolume).toHaveBeenLastCalledWith(.25);expect(audio.setVolume).toHaveBeenLastCalledWith(.65);
+  await act(async()=>{result.current.setScreenWatching('bob',false)});
+  expect(native.audio.setSubscribed).toHaveBeenLastCalledWith(false);expect(audio.detach).toHaveBeenCalledTimes(1);
+});
+
+it('previews native video without ever subscribing to or playing its own system audio',async()=>{
+  const {result}=await join();const room=state.rooms[0],native=addRemote(room,'screen:me'),audio=remoteAudio('self');
+  native.screen.track={};state.sounds.mockClear();
+  await act(async()=>{room.emit('ParticipantConnected',native.participant);room.emit('TrackPublished',native.screen,native.participant)});
+  expect(native.screen.setSubscribed).toHaveBeenLastCalledWith(true);
+  expect(native.audio.setSubscribed).toHaveBeenLastCalledWith(false);
+  expect(result.current.videoTracks[0]).toMatchObject({identity:'me',local:true,native:true});
+  await act(async()=>{room.emit('TrackSubscribed',audio,native.audio,native.participant)});
+  expect(audio.attach).not.toHaveBeenCalled();
+  expect(state.sounds.mock.calls.filter(call=>call[0]==='join')).toHaveLength(0);
+});
+
+it('routes native viewer notifications to the owner, validates the SID and never counts the preview',async()=>{
+  const {result}=await join();const room=state.rooms[0];
+  const native=addRemote(room,'screen:me'),bob=addRemote(room,'bob');
+  await act(async()=>{room.emit('TrackPublished',native.screen,native.participant)});
+  state.sounds.mockClear();
+  const emit=(participant:any,sid:string)=>room.emit('DataReceived',new TextEncoder().encode(JSON.stringify({type:'watch',sid,watching:true})),participant,undefined,'shakechat.watch.v1');
+  await act(async()=>{emit(native.participant,native.screen.trackSid);emit(bob.participant,'stale');emit(bob.participant,native.screen.trackSid);emit(bob.participant,native.screen.trackSid)});
+  expect(result.current.screenViewers).toEqual(['bob']);expect(state.sounds).toHaveBeenCalledTimes(1);
+  const other=addRemote(room,'screen:other');
+  await act(async()=>{room.emit('TrackPublished',other.screen,other.participant)});
+  await act(async()=>{result.current.setScreenWatching('other',true);room.emit('TrackSubscribed',{kind:'video'},other.screen,other.participant)});
+  const last=room.localParticipant.publishData.mock.calls.at(-1);
+  expect(last[1].destinationIdentities).toEqual(['other']);
+  expect(JSON.parse(new TextDecoder().decode(last[0]))).toMatchObject({sid:other.screen.trackSid,watching:true});
+});
+
+async function joinDesktop(){
+  (window as any).__TAURI_INTERNALS__={invoke:vi.fn()};
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({url:'wss://test',token:'native-token'})})));
+  return join();
+}
+async function startNative(result:any){
+  let sharing!:Promise<void>;
+  await act(async()=>{sharing=result.current.toggleScreenShare();await Promise.resolve()});
+  await ui.findByRole('button',{name:/Ekran 1/});
+  await act(async()=>{fireEvent.click(ui.getByRole('button',{name:/Ekran 1/}));await sharing});
+}
+
+it('waits for both native audio and microphone isolation before starting a test',async()=>{
+  const {result}=await joinDesktop();await startNative(result);
+  expect(result.current.screenSharing).toBe(true);
+  let finish!:()=>void;const invoked=state.native.getMockImplementation()!;
+  state.native.mockImplementation((command:string,args:any)=>command==='native_screen_audio_pause'&&args.paused?new Promise<void>(resolve=>{finish=resolve}):invoked(command,args));
+  let isolation!:Promise<()=>Promise<void>>,completed=false;
+  await act(async()=>{isolation=acquireMicrophoneTestIsolation().then(release=>{completed=true;testReleases.push(release);return release});await Promise.resolve()});
+  expect(completed).toBe(false);expect(state.rooms[0].mic.isMuted).toBe(true);
+  await act(async()=>{finish();await isolation});
+  expect(completed).toBe(true);expect(result.current.screenSharing).toBe(true);
+  await act(async()=>{await (await isolation)()});
+  expect(state.native).toHaveBeenCalledWith('native_screen_audio_pause',{paused:false});
+});
+
+it('blocks microphone monitoring if native audio cannot be isolated',async()=>{
+  const {result}=await joinDesktop();await startNative(result);
+  state.native.mockImplementation(async(command:string,args:any)=>{if(command==='native_screen_audio_pause'&&args.paused)throw new Error('audio pause failed')});
+  await act(async()=>{await expect(acquireMicrophoneTestIsolation()).rejects.toThrow('audio pause failed')});
+  expect(isMicrophoneTestActive()).toBe(false);
+});
+
+it('cancels an open native picker when leaving the voice channel',async()=>{
+  const {result}=await joinDesktop();let sharing!:Promise<void>;
+  await act(async()=>{sharing=result.current.toggleScreenShare();await Promise.resolve()});
+  await ui.findByRole('button',{name:/Ekran 1/});
+  await act(async()=>{await result.current.leave();await sharing});
+  expect(document.querySelector('dialog')).toBeNull();
+  expect(state.native.mock.calls.some(call=>call[0]==='native_screen_start')).toBe(false);
+  expect(result.current.screenSharing).toBe(false);
+});
+
+it('cleans up a native start that completes after leaving and rejects duplicate starts',async()=>{
+  const {result}=await joinDesktop();let finish!:()=>void;
+  const invoked=state.native.getMockImplementation()!;
+  state.native.mockImplementation((command:string,args:any)=>command==='native_screen_start'?new Promise<void>(resolve=>{finish=resolve}):invoked(command,args));
+  let sharing!:Promise<void>,leaving!:Promise<void>;
+  await act(async()=>{sharing=result.current.toggleScreenShare();await result.current.toggleScreenShare()});
+  await ui.findByRole('button',{name:/Ekran 1/});
+  await act(async()=>{fireEvent.click(ui.getByRole('button',{name:/Ekran 1/}));await Promise.resolve()});
+  await waitFor(()=>expect(finish).toBeTypeOf('function'));
+  act(()=>{leaving=result.current.leave()});
+  await act(async()=>{finish();await sharing;await leaving});
+  expect(state.native.mock.calls.filter(call=>call[0]==='native_screen_start')).toHaveLength(1);
+  expect(state.native.mock.calls.at(-1)?.[0]).toBe('native_screen_stop');
+  expect(result.current.screenSharing).toBe(false);expect(result.current.status).toBe('disconnected');
+});
+
+it('updates native quality in place and preserves previous settings if the update fails',async()=>{
+  const {result}=await joinDesktop();await startNative(result);
+  await act(async()=>{await result.current.changeScreenSettings({height:720,fps:30})});
+  expect(state.native).toHaveBeenCalledWith('native_screen_update',expect.objectContaining({height:720,fps:30}));
+  expect(state.native.mock.calls.filter(call=>call[0]==='native_screen_start')).toHaveLength(1);
+  expect(state.rooms[0].disconnect).not.toHaveBeenCalled();
+  state.native.mockRejectedValueOnce(new Error('source lost'));
+  await act(async()=>{await result.current.changeScreenSettings({height:1440,fps:60})});
+  expect(result.current.screenSettings).toEqual({height:720,fps:30});expect(result.current.screenSharing).toBe(true);
 });

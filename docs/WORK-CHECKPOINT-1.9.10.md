@@ -1,3 +1,5 @@
+> Tarihsel 1.9.10 kaydı. Güncel durum: [KNOWN-ISSUES.md](KNOWN-ISSUES.md) ve [WORK-CHECKPOINT.md](WORK-CHECKPOINT.md).
+
 # ShakeChat 1.9.10 — devam noktası
 
 Son kayıt: 28 Eylül 2026. Kullanıcı kalan sorunların kodda tamamlanmasını,
