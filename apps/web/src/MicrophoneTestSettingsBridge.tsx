@@ -5,6 +5,8 @@ import { Activity, Headphones, Mic } from 'lucide-react';
 import { NoiseGateProcessor } from './noiseGate';
 import { loadVoiceDevices } from './voiceDevicePreferences';
 import { acquireMicrophoneTestIsolation } from './microphoneTestIsolation';
+import { isMicrophonePermissionError, microphoneErrorMessage } from './microphoneAccess';
+import { MicrophoneAccessHelp } from './MicrophoneAccessHelp';
 
 type MicTestSettings = {
   echoCancellation: boolean;
@@ -48,6 +50,7 @@ export function MicrophoneTest() {
   const [active, setActive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [permissionDenied, setPermissionDenied] = useState(false);
   const [inputDb, setInputDb] = useState(-140);
   const [outputDb, setOutputDb] = useState(-140);
   const [gateEnabled, setGateEnabled] = useState(true);
@@ -136,7 +139,7 @@ export function MicrophoneTest() {
       processorRef.current?.setSettings(next.noiseGateEnabled, next.noiseGateThreshold, next.noiseSuppression);
       void rawTrackRef.current?.applyConstraints({
         echoCancellation: next.echoCancellation,
-        noiseSuppression: next.noiseSuppression,
+        noiseSuppression: false,
         autoGainControl: next.autoGainControl,
       }).catch(() => undefined);
     };
@@ -153,6 +156,7 @@ export function MicrophoneTest() {
     const operation = ++operationRef.current;
     setBusy(true);
     setError('');
+    setPermissionDenied(false);
     try {
       const release = await acquireMicrophoneTestIsolation();
       if (operation !== operationRef.current) { await release(); return; }
@@ -166,7 +170,7 @@ export function MicrophoneTest() {
           sampleRate: 48_000,
           channelCount: 2,
           echoCancellation: settings.echoCancellation,
-          noiseSuppression: settings.noiseSuppression,
+          noiseSuppression: false,
           autoGainControl: settings.autoGainControl,
           ...(preferredDevice ? { deviceId: { exact: preferredDevice } } : {}),
         },
@@ -212,7 +216,10 @@ export function MicrophoneTest() {
     } catch (cause) {
       if (operation === operationRef.current) {
         await stop();
-        if (mountedRef.current) setError(cause instanceof Error ? cause.message : 'Mikrofon testi başlatılamadı.');
+        if (mountedRef.current) {
+          setError(microphoneErrorMessage(cause));
+          setPermissionDenied(isMicrophonePermissionError(cause));
+        }
       }
     } finally {
       if (mountedRef.current && operation === operationRef.current) setBusy(false);
@@ -228,6 +235,7 @@ export function MicrophoneTest() {
       {deviceLabel&&<small className="mic-test-device">{deviceLabel}</small>}
     </div>
     {error&&<div className="error mic-test-error">{error}</div>}
+    {permissionDenied&&<MicrophoneAccessHelp onRetry={start}/>}
     <div className="mic-test-meters" aria-live="polite">
       <div className="mic-meter-row"><span>Giriş</span><div className="mic-meter-track"><i style={{width:`${meterPercent(inputDb)}%`}}/></div><b>{active?`${Math.round(inputDb)} dB`:'—'}</b></div>
       <div className="mic-meter-row processed"><span>İşlenmiş</span><div className="mic-meter-track"><i style={{width:`${meterPercent(outputDb)}%`}}/></div><b>{active?`${Math.round(outputDb)} dB`:'—'}</b></div>

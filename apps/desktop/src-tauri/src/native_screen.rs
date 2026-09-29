@@ -4,7 +4,7 @@ use livekit::{
     webrtc::{
         audio_frame::AudioFrame,
         audio_source::{native::NativeAudioSource, AudioSourceOptions, RtcAudioSource},
-        desktop_capturer::{CaptureSource, DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions},
+        desktop_capturer::{CaptureError, CaptureSource, DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions},
         native::yuv_helper,
         video_frame::{I420Buffer, VideoFrame, VideoRotation},
         video_source::{native::NativeVideoSource, RtcVideoSource, VideoResolution},
@@ -14,11 +14,11 @@ use serde::Serialize;
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::State;
 use tokio::sync::{mpsc, Mutex};
@@ -44,11 +44,18 @@ struct NativeScreenSession {
     capture_thread: Option<thread::JoinHandle<()>>,
     audio_thread: Option<thread::JoinHandle<()>>,
     audio_task: Option<tauri::async_runtime::JoinHandle<()>>,
+    capture_commands: std::sync::mpsc::Sender<CaptureCommand>,
+    audio_track: LocalAudioTrack,
+    audio_source: NativeAudioSource,
+    audio_paused: Arc<AtomicBool>,
+    audio_epoch: Arc<AtomicU64>,
+    audio_gate: Arc<Mutex<()>>,
 }
 
 #[derive(Default)]
 pub struct NativeScreenState {
     inner: Mutex<Option<NativeScreenSession>>,
+    operation: Mutex<()>,
 }
 
 fn map_error(context: &str, error: impl std::fmt::Display) -> String {
@@ -123,13 +130,16 @@ async fn stop_session(state: &NativeScreenState) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn native_screen_stop(state: State<'_, NativeScreenState>) -> Result<(), String> {
+    let _operation = state.operation.lock().await;
     stop_session(state.inner()).await
 }
 
 #[cfg(windows)]
 fn run_system_audio_loop(
     stop: Arc<AtomicBool>,
-    sender: mpsc::UnboundedSender<Vec<i16>>,
+    sender: mpsc::Sender<(u64, Vec<i16>)>,
+    paused: Arc<AtomicBool>,
+    epoch: Arc<AtomicU64>,
     ready: std::sync::mpsc::SyncSender<Result<(), String>>,
 ) {
     if let Err(error) = wasapi::initialize_mta().ok() {
@@ -183,16 +193,15 @@ fn run_system_audio_loop(
         let mut queue = VecDeque::<u8>::with_capacity(chunk_bytes * 20);
 
         while !stop.load(Ordering::Relaxed) {
-            match capture_client.get_next_packet_size() {
-                Ok(Some(frames)) if frames > 0 => {
-                    if capture_client.read_from_device_to_deque(&mut queue).is_err() {
-                        break;
-                    }
-                }
-                Ok(_) => {}
-                Err(_) => break,
+            let packet_epoch = epoch.load(Ordering::Acquire);
+            loop {
+                let frames = capture_client.get_next_packet_size().map_err(|error| map_error("Sistem sesi cihazı bağlantısı kesildi", error))?;
+                if !matches!(frames, Some(count) if count > 0) || stop.load(Ordering::Relaxed) { break; }
+                capture_client.read_from_device_to_deque(&mut queue).map_err(|error| map_error("Sistem sesi okunamadı", error))?;
+                // Continue draining WASAPI while isolated; never queue the test monitor.
+                if paused.load(Ordering::Acquire) { queue.clear(); }
             }
-
+            if paused.load(Ordering::Acquire) || packet_epoch != epoch.load(Ordering::Acquire) { queue.clear(); }
             while queue.len() >= chunk_bytes {
                 let mut samples = Vec::with_capacity(frames_per_chunk * SCREEN_AUDIO_CHANNELS as usize);
                 for _ in 0..(frames_per_chunk * SCREEN_AUDIO_CHANNELS as usize) {
@@ -204,9 +213,9 @@ fn run_system_audio_loop(
                     let sample = if sample.is_finite() { sample.clamp(-1.0, 1.0) } else { 0.0 };
                     samples.push((sample * i16::MAX as f32).round() as i16);
                 }
-                if sender.send(samples).is_err() {
-                    break;
-                }
+                // Bound latency/memory when the encoder or network is slow.
+                if sender.is_closed() { stop.store(true, Ordering::Release); break; }
+                let _ = sender.try_send((packet_epoch, samples));
             }
 
             let _ = event.wait_for_event(250);
@@ -217,6 +226,7 @@ fn run_system_audio_loop(
     })();
 
     if let Err(error) = result {
+        stop.store(true, Ordering::Release);
         let _ = ready.send(Err(error));
     }
     wasapi::deinitialize();
@@ -225,7 +235,9 @@ fn run_system_audio_loop(
 #[cfg(not(windows))]
 fn run_system_audio_loop(
     _stop: Arc<AtomicBool>,
-    _sender: mpsc::UnboundedSender<Vec<i16>>,
+    _sender: mpsc::Sender<(u64, Vec<i16>)>,
+    _paused: Arc<AtomicBool>,
+    _epoch: Arc<AtomicU64>,
     ready: std::sync::mpsc::SyncSender<Result<(), String>>,
 ) {
     let _ = ready.send(Err("Native sistem sesi yalnız Windows masaüstünde destekleniyor.".into()));
@@ -242,6 +254,7 @@ pub async fn native_screen_start(
     height: u32,
     fps: u32,
 ) -> Result<(), String> {
+    let _operation = state.operation.lock().await;
     stop_session(state.inner()).await?;
     let width = width.clamp(320, 7680);
     let height = height.clamp(240, 4320);
@@ -266,13 +279,10 @@ pub async fn native_screen_start(
         "shakechat-screen",
         RtcVideoSource::Native(video_source.clone()),
     );
-    let max_bitrate = match height {
-        0..=480 => 1_500_000,
-        481..=720 => 3_500_000,
-        721..=1080 => 6_000_000,
-        _ => 14_000_000,
-    };
-    room.local_participant()
+    // The capture worker controls actual dimensions/FPS. Keep encoder ceilings
+    // high enough for live quality changes without republishing the track.
+    let max_bitrate = 14_000_000;
+    let video_publish = room.local_participant()
         .publish_track(
             LocalTrack::Video(video_track),
             TrackPublishOptions {
@@ -281,13 +291,16 @@ pub async fn native_screen_start(
                 simulcast: false,
                 video_encoding: Some(VideoEncoding {
                     max_bitrate,
-                    max_framerate: fps as f64,
+                    max_framerate: 144.0,
                 }),
                 ..Default::default()
             },
         )
-        .await
-        .map_err(|error| map_error("Native ekran görüntüsü yayınlanamadı", error))?;
+        .await;
+    if let Err(error) = video_publish {
+        let _ = room.close().await;
+        return Err(map_error("Native ekran görüntüsü yayınlanamadı", error));
+    }
 
     let screen_audio_source = NativeAudioSource::new(
         AudioSourceOptions::default(),
@@ -299,9 +312,9 @@ pub async fn native_screen_start(
         "shakechat-screen-audio",
         RtcAudioSource::Native(screen_audio_source.clone()),
     );
-    room.local_participant()
+    let audio_publish = room.local_participant()
         .publish_track(
-            LocalTrack::Audio(screen_audio_track),
+            LocalTrack::Audio(screen_audio_track.clone()),
             TrackPublishOptions {
                 source: TrackSource::ScreenshareAudio,
                 audio_encoding: Some(AudioEncoding { max_bitrate: 192_000 }),
@@ -310,16 +323,26 @@ pub async fn native_screen_start(
                 ..Default::default()
             },
         )
-        .await
-        .map_err(|error| map_error("Native sistem sesi yayınlanamadı", error))?;
+        .await;
+    if let Err(error) = audio_publish {
+        let _ = room.close().await;
+        return Err(map_error("Native sistem sesi yayınlanamadı", error));
+    }
 
     let stop = Arc::new(AtomicBool::new(false));
 
-    let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<Vec<i16>>();
+    let audio_paused = Arc::new(AtomicBool::new(false));
+    let audio_epoch = Arc::new(AtomicU64::new(0));
+    let audio_gate = Arc::new(Mutex::new(()));
+    let (audio_tx, mut audio_rx) = mpsc::channel::<(u64, Vec<i16>)>(8);
     let task_audio_source = screen_audio_source.clone();
+    let task_paused = audio_paused.clone();
+    let task_epoch = audio_epoch.clone();
+    let task_gate = audio_gate.clone();
     let audio_task = tauri::async_runtime::spawn(async move {
-        while let Some(samples) = audio_rx.recv().await {
-            if samples.is_empty() {
+        while let Some((epoch, samples)) = audio_rx.recv().await {
+            let _gate = task_gate.lock().await;
+            if task_paused.load(Ordering::Acquire) || epoch != task_epoch.load(Ordering::Acquire) || samples.is_empty() {
                 continue;
             }
             let samples_per_channel = samples.len() as u32 / SCREEN_AUDIO_CHANNELS;
@@ -340,76 +363,57 @@ pub async fn native_screen_start(
 
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
     let audio_thread_stop = stop.clone();
-    let audio_thread = thread::Builder::new()
+    let capture_paused = audio_paused.clone();
+    let capture_epoch = audio_epoch.clone();
+    let audio_thread = match thread::Builder::new()
         .name("shakechat-system-audio".into())
-        .spawn(move || run_system_audio_loop(audio_thread_stop, audio_tx, ready_tx))
-        .map_err(|error| map_error("Sistem sesi iş parçacığı başlatılamadı", error))?;
+        .spawn(move || run_system_audio_loop(audio_thread_stop, audio_tx, capture_paused, capture_epoch, ready_tx)) {
+        Ok(handle) => handle,
+        Err(error) => { audio_task.abort(); let _ = room.close().await; return Err(map_error("Sistem sesi iş parçacığı başlatılamadı", error)); }
+    };
 
     let audio_ready = tauri::async_runtime::spawn_blocking(move || {
-        ready_rx.recv_timeout(Duration::from_secs(3))
-    })
-    .await
-    .map_err(|error| map_error("Sistem sesi hazırlığı beklenemedi", error))?;
-
+        ready_rx.recv_timeout(Duration::from_secs(3)).map_err(|error| error.to_string())?
+    }).await.map_err(|error| error.to_string()).and_then(|result| result);
     match audio_ready {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
+        Ok(()) => {}
+        Err(error) => {
             stop.store(true, Ordering::Relaxed);
             audio_task.abort();
             join_thread(Some(audio_thread)).await;
             let _ = room.close().await;
             return Err(error);
         }
-        Err(error) => {
-            stop.store(true, Ordering::Relaxed);
-            audio_task.abort();
-            join_thread(Some(audio_thread)).await;
-            let _ = room.close().await;
-            return Err(map_error("Sistem sesi hazırlanırken zaman aşımı", error));
-        }
     }
 
-    let thread_stop = stop.clone();
-    let frame_source = video_source.clone();
-    capturer.start_capture(Some(selected), move |result| {
-        if thread_stop.load(Ordering::Relaxed) {
-            return;
-        }
-        let Ok(frame) = result else { return };
-        let frame_width = frame.width().max(1) as u32;
-        let frame_height = frame.height().max(1) as u32;
-        let mut buffer = I420Buffer::new(frame_width, frame_height);
-        let (stride_y, stride_u, stride_v) = buffer.strides();
-        let (data_y, data_u, data_v) = buffer.data_mut();
-        yuv_helper::argb_to_i420(
-            frame.data(),
-            frame.stride(),
-            data_y,
-            stride_y,
-            data_u,
-            stride_u,
-            data_v,
-            stride_v,
-            frame_width as i32,
-            frame_height as i32,
-        );
-        let video_frame = VideoFrame {
-            rotation: VideoRotation::VideoRotation0,
-            timestamp_us: 0,
-            frame_metadata: None,
-            buffer,
-        };
-        let _ = frame_source.capture_frame(&video_frame);
-    });
-
+    configure_capture(&mut capturer, selected, video_source.clone(), stop.clone(), width, height);
     let loop_stop = stop.clone();
-    let frame_interval = Duration::from_micros((1_000_000u64 / fps as u64).max(1));
+    let (capture_commands, command_rx) = std::sync::mpsc::channel::<CaptureCommand>();
     let capture_thread = match thread::Builder::new()
         .name("shakechat-native-screen".into())
         .spawn(move || {
+            let mut interval = Duration::from_micros(1_000_000 / fps as u64);
             while !loop_stop.load(Ordering::Relaxed) {
+                let started = Instant::now();
+                while let Ok(command) = command_rx.try_recv() {
+                    let prepared = (|| {
+                        let mut next = make_capturer(&command.kind)?;
+                        let selected = pick_source(&next, &command.id)?;
+                        configure_capture(&mut next, selected, video_source.clone(), loop_stop.clone(), command.width, command.height);
+                        Ok::<_, String>(next)
+                    })();
+                    match prepared {
+                        Ok(next) => {
+                            capturer = next;
+                            interval = Duration::from_micros(1_000_000 / command.fps as u64);
+                            let _ = command.completed.send(Ok(()));
+                        }
+                        Err(error) => { let _ = command.completed.send(Err(error)); }
+                    }
+                }
                 capturer.capture_frame();
-                thread::sleep(frame_interval);
+                // Capture/conversion time is part of the frame budget.
+                thread::sleep(interval.saturating_sub(started.elapsed()));
             }
         }) {
         Ok(handle) => handle,
@@ -428,6 +432,102 @@ pub async fn native_screen_start(
         capture_thread: Some(capture_thread),
         audio_thread: Some(audio_thread),
         audio_task: Some(audio_task),
+        capture_commands,
+        audio_track: screen_audio_track,
+        audio_source: screen_audio_source,
+        audio_paused,
+        audio_epoch,
+        audio_gate,
     });
     Ok(())
+}
+
+struct CaptureCommand {
+    kind: String,
+    id: String,
+    width: u32,
+    height: u32,
+    fps: u32,
+    completed: tokio::sync::oneshot::Sender<Result<(), String>>,
+}
+
+fn fit_dimensions(width: u32, height: u32, limit_width: u32, limit_height: u32) -> (u32, u32) {
+    let scale = (limit_width as f64 / width as f64).min(limit_height as f64 / height as f64).min(1.0);
+    (((width as f64 * scale) as u32 / 2 * 2).max(2), ((height as f64 * scale) as u32 / 2 * 2).max(2))
+}
+
+fn configure_capture(capturer: &mut DesktopCapturer, selected: CaptureSource, source: NativeVideoSource, stop: Arc<AtomicBool>, width: u32, height: u32) {
+    capturer.start_capture(Some(selected), move |result| {
+        if stop.load(Ordering::Relaxed) { return; }
+        let frame = match result {
+            Ok(frame) => frame,
+            Err(CaptureError::Permanent) => { stop.store(true, Ordering::Release); return; }
+            Err(_) => return,
+        };
+        let frame_width = frame.width().max(1) as u32;
+        let frame_height = frame.height().max(1) as u32;
+        let mut buffer = I420Buffer::new(frame_width, frame_height);
+        let (stride_y, stride_u, stride_v) = buffer.strides();
+        let (data_y, data_u, data_v) = buffer.data_mut();
+        yuv_helper::argb_to_i420(frame.data(), frame.stride(), data_y, stride_y, data_u, stride_u, data_v, stride_v, frame_width as i32, frame_height as i32);
+        let (output_width, output_height) = fit_dimensions(frame_width, frame_height, width, height);
+        let buffer = if (output_width, output_height) != (frame_width, frame_height) { buffer.scale(output_width as i32, output_height as i32) } else { buffer };
+        let video_frame = VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: 0, frame_metadata: None, buffer };
+        let _ = source.capture_frame(&video_frame);
+    });
+}
+
+#[tauri::command]
+pub async fn native_screen_update(state: State<'_, NativeScreenState>, source_kind: String, source_id: String, width: u32, height: u32, fps: u32) -> Result<(), String> {
+    let _operation = state.operation.lock().await;
+    let inner = state.inner.lock().await;
+    let session = inner.as_ref().ok_or("Etkin ekran yayını bulunamadı.")?;
+    let (completed, response) = tokio::sync::oneshot::channel();
+    session.capture_commands.send(CaptureCommand {
+        kind: source_kind, id: source_id, width: width.clamp(320, 7680), height: height.clamp(240, 4320), fps: fps.clamp(5, 144), completed,
+    }).map_err(|_| "Ekran yakalama motoru durdu.".to_string())?;
+    response.await.map_err(|_| "Ekran ayarı uygulanamadı.".to_string())?
+}
+
+#[tauri::command]
+pub async fn native_screen_audio_pause(state: State<'_, NativeScreenState>, paused: bool) -> Result<(), String> {
+    let _operation = state.operation.lock().await;
+    let inner = state.inner.lock().await;
+    let Some(session) = inner.as_ref() else { return Ok(()) };
+    let _gate = session.audio_gate.lock().await;
+    session.audio_track.mute();
+    session.audio_paused.store(true, Ordering::Release);
+    session.audio_epoch.fetch_add(1, Ordering::AcqRel);
+    session.audio_source.clear_buffer();
+    if !paused {
+        // The monitor has stopped before isolation is released. Let the WASAPI
+        // worker drain its <=250ms event wait before resuming system audio.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        session.audio_epoch.fetch_add(1, Ordering::AcqRel);
+        session.audio_source.clear_buffer();
+        session.audio_paused.store(false, Ordering::Release);
+        session.audio_track.unmute();
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_dimensions;
+    #[test]
+    fn screen_dimensions_fit_the_target_without_stretching_or_upscaling() {
+        assert_eq!(fit_dimensions(3840, 2160, 1920, 1080), (1920, 1080));
+        assert_eq!(fit_dimensions(2560, 1440, 1280, 720), (1280, 720));
+        assert_eq!(fit_dimensions(1080, 1920, 1920, 1080), (606, 1080));
+        assert_eq!(fit_dimensions(640, 480, 1920, 1080), (640, 480));
+    }
+}
+
+#[tauri::command]
+pub async fn native_screen_active(state: State<'_, NativeScreenState>) -> Result<bool, String> {
+    let inner = state.inner.lock().await;
+    Ok(inner.as_ref().is_some_and(|session| !session.stop.load(Ordering::Acquire)
+        && session.room.connection_state() != livekit::ConnectionState::Disconnected
+        && session.audio_thread.as_ref().is_some_and(|worker| !worker.is_finished())
+        && session.capture_thread.as_ref().is_some_and(|worker| !worker.is_finished())))
 }

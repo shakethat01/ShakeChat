@@ -1,14 +1,20 @@
 /** Coordinate the settings portal and the voice session without publishing the
  * test capture. A lease is active before we await the room's mute operation. */
 type Reconcile = () => Promise<void>;
-let reconcile: Reconcile | undefined;
+const handlers = new Set<Reconcile>();
 let leases = 0;
+
+async function reconcileAll() {
+  const results = await Promise.allSettled([...handlers].map(handler => handler()));
+  const failed = results.find(result => result.status === 'rejected');
+  if (failed?.status === 'rejected') throw failed.reason;
+}
 
 export function isMicrophoneTestActive() { return leases > 0; }
 
 export function registerMicrophoneTestIsolation(handler: Reconcile) {
-  reconcile = handler;
-  return () => { if (reconcile === handler) reconcile = undefined; };
+  handlers.add(handler);
+  return () => { handlers.delete(handler); };
 }
 
 export async function acquireMicrophoneTestIsolation(): Promise<() => Promise<void>> {
@@ -18,10 +24,10 @@ export async function acquireMicrophoneTestIsolation(): Promise<() => Promise<vo
     if (released) return;
     released = true;
     leases -= 1;
-    await reconcile?.();
+    await reconcileAll();
   };
   try {
-    await reconcile?.();
+    await reconcileAll();
     return release;
   } catch (error) {
     await release().catch(() => undefined);

@@ -50,6 +50,9 @@ jobs:
       - name: Cargo check desktop updater runtime
         run: npm run desktop:check
 
+      - name: Test native capture dimensions
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+
       - name: Verify production updater key configuration
         env:
           PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

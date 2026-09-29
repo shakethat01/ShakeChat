@@ -3,7 +3,7 @@ import { useVoice } from './useVoice';
 import { useLocalMicActivity } from './useLocalMicActivity';
 import { useNativeScreenShare } from './useNativeScreenShare';
 
-/** One room and one microphone pipeline for voice, camera and screen sharing.
+/** One stable voice/camera room and one RNNoise microphone pipeline.
  * Desktop keeps the stable JS/LiveKit voice path, while screen capture is
  * replaced by the native Windows publisher when running inside Tauri.
  */
