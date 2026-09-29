@@ -130,13 +130,11 @@ pub async fn native_screen_start(
     .await
     .map_err(|error| map_error("Ekran kaynağı hazırlanamadı", error))??;
 
-    let (room, _events) = Room::connect(
-        &url,
-        &token,
-        RoomOptions { auto_subscribe: false, ..Default::default() },
-    )
-    .await
-    .map_err(|error| map_error("LiveKit ekran yayıncısına bağlanılamadı", error))?;
+    let mut room_options = RoomOptions::default();
+    room_options.auto_subscribe = false;
+    let (room, _events) = Room::connect(&url, &token, room_options)
+        .await
+        .map_err(|error| map_error("LiveKit ekran yayıncısına bağlanılamadı", error))?;
 
     let video_source = NativeVideoSource::new(VideoResolution { width, height }, true);
     let video_track = LocalVideoTrack::create_video_track(
