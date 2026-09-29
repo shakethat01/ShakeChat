@@ -24,6 +24,9 @@ Son güncelleme: 29 Eylül 2026. Önce bu dosyayı, `KNOWN-ISSUES.md` dosyasın�
 
 Yeni izin/native regresyonları `apps/web/src/useVoiceRuntime.test.tsx` içinde. İlk odaklı çalışmada **30/30** geçti (12 yeni senaryo). **Tam yerel kontrol başarılı: 111 web + 70 API = 181 test**, API/web TypeScript kontrolleri ve üretim derlemeleri. Windows Rust testi/Cargo/NSIS sonucu aşağıya eklenecek.
 
+- Devam düzeltmeleri `1a3bd7ae6a63061bf6b68a74b10cc30be7572b01` commit'iyle gönderildi; PR #3 açıldı.
+- Windows CI `36575938038`: 181 test, TypeScript ve Cargo check geçti. Yeni `cargo test` adımı depo kökünden çalıştığı için `src-tauri/.cargo/config.toml` içindeki statik MSVC ayarını okuyamadı; libwebrtc ile MT/MD bağlama uyuşmazlığı oluştu. Test adımının çalışma dizini `apps/desktop/src-tauri` olarak düzeltildi. Yeni CI sonucu bekleniyor; bu başarısız çalışmada kurulum dosyası üretilmedi.
+
 ## Sonraki teslim
 
 1. Tam kontroller ve Windows Cargo/NSIS işi tamamlanmalı; hata varsa düzeltilmeli.
