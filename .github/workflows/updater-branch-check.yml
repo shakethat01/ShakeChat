@@ -54,7 +54,8 @@ jobs:
         # Cargo resolves .cargo/config.toml from the working directory, not the manifest path.
         # Match Tauri's static MSVC runtime when linking the libwebrtc test executable.
         working-directory: apps/desktop/src-tauri
-        run: cargo test
+        # Reuse the release-profile dependencies in the installer build below.
+        run: cargo test --release
 
       - name: Verify production updater key configuration
         env:

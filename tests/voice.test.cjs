@@ -76,6 +76,13 @@ test('SPEAK change updates the voice participant and closes a screen publisher',
   assert.equal(calls.updated[0].options.permission.canPublish,false);
 });
 
+test('SPEAK revocation closes a native publisher even when its voice participant is gone',async()=>{
+  const {service,calls}=fixture({permissions:['VIEW_CHANNEL','CONNECT_VOICE']});
+  service.roomClient.updateParticipant=async()=>{throw Object.assign(new Error('participant missing'),{status:404})};
+  await service.refreshServerAccess('friends',['alice']);
+  assert.deepEqual(calls.removed,[{room:'shakechat-voice',identity:'screen:alice'}]);
+});
+
 test('channel roster merges the technical native screen publisher into its owner',async()=>{
   const {service}=fixture();
   service.prisma.serverMember={findUnique:async()=>({id:'member'})};

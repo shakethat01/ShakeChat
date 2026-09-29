@@ -140,12 +140,16 @@ export class VoiceService {
           return;
         }
         const canSpeak = await this.permissions.has(userId, serverId, Permission.SPEAK, channel.id);
-        await this.roomClient.updateParticipant(room, userId, {
-          permission: { canSubscribe: true, canPublish: canSpeak, canPublishData: true },
-        });
-        if (!canSpeak) {
-          await this.roomClient.removeParticipant(room, this.screenIdentity(userId), { revokeTokenTs: BigInt(Math.floor(Date.now() / 1000)) }).catch(() => undefined);
-        }
+        // The native publisher has its own connection and may outlive the voice
+        // participant. Revoking it must still run if updating voice returns 404.
+        await Promise.allSettled([
+          this.roomClient.updateParticipant(room, userId, {
+            permission: { canSubscribe: true, canPublish: canSpeak, canPublishData: true },
+          }),
+          ...(!canSpeak ? [this.roomClient.removeParticipant(room, this.screenIdentity(userId), {
+            revokeTokenTs: BigInt(Math.floor(Date.now() / 1000)),
+          })] : []),
+        ]);
       } catch {
         // Room or participant may not currently exist. The next join token is still authoritative.
       }
