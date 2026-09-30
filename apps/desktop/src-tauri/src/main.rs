@@ -2,6 +2,7 @@
 
 mod native_screen;
 mod native_screen_preview;
+mod screen_audio;
 mod microphone_permissions;
 
 use native_screen::NativeScreenState;
@@ -19,6 +20,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             native_screen::native_screen_sources,
             native_screen_preview::native_screen_preview,
+            screen_audio::native_screen_audio_target,
             native_screen::native_screen_start,
             native_screen::native_screen_stop,
             native_screen::native_screen_update,
