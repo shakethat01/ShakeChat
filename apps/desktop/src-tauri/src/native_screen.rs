@@ -12,7 +12,6 @@ use livekit::{
 };
 use serde::Serialize;
 use std::{
-    collections::VecDeque,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
@@ -23,12 +22,8 @@ use std::{
 use tauri::State;
 use tokio::sync::{mpsc, Mutex};
 
-#[cfg(windows)]
-use wasapi::{DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
-
 const SCREEN_AUDIO_SAMPLE_RATE: u32 = 48_000;
 const SCREEN_AUDIO_CHANNELS: u32 = 2;
-const SCREEN_AUDIO_FRAME_MS: usize = 10;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,115 +129,6 @@ pub async fn native_screen_stop(state: State<'_, NativeScreenState>) -> Result<(
     stop_session(state.inner()).await
 }
 
-#[cfg(windows)]
-fn run_system_audio_loop(
-    stop: Arc<AtomicBool>,
-    sender: mpsc::Sender<(u64, Vec<i16>)>,
-    paused: Arc<AtomicBool>,
-    epoch: Arc<AtomicU64>,
-    ready: std::sync::mpsc::SyncSender<Result<(), String>>,
-) {
-    if let Err(error) = wasapi::initialize_mta().ok() {
-        let _ = ready.send(Err(map_error("Windows ses sistemi başlatılamadı", error)));
-        return;
-    }
-
-    let result = (|| -> Result<(), String> {
-        let enumerator = DeviceEnumerator::new().map_err(|error| map_error("Ses cihazları okunamadı", error))?;
-        let device = enumerator
-            .get_default_device(&Direction::Render)
-            .map_err(|error| map_error("Varsayılan hoparlör bulunamadı", error))?;
-        let mut audio_client = device
-            .get_iaudioclient()
-            .map_err(|error| map_error("WASAPI loopback açılamadı", error))?;
-
-        let desired_format = WaveFormat::new(
-            32,
-            32,
-            &SampleType::Float,
-            SCREEN_AUDIO_SAMPLE_RATE as usize,
-            SCREEN_AUDIO_CHANNELS as usize,
-            None,
-        );
-        let block_align = desired_format.get_blockalign() as usize;
-        let (_, min_period) = audio_client
-            .get_device_period()
-            .map_err(|error| map_error("WASAPI cihaz periyodu okunamadı", error))?;
-        let mode = StreamMode::EventsShared {
-            autoconvert: true,
-            buffer_duration_hns: min_period,
-        };
-        audio_client
-            .initialize_client(&desired_format, &Direction::Capture, &mode)
-            .map_err(|error| map_error("Sistem sesi loopback başlatılamadı", error))?;
-        let event = audio_client
-            .set_get_eventhandle()
-            .map_err(|error| map_error("Sistem sesi olay kuyruğu açılamadı", error))?;
-        let capture_client = audio_client
-            .get_audiocaptureclient()
-            .map_err(|error| map_error("Sistem sesi yakalama istemcisi açılamadı", error))?;
-        audio_client
-            .start_stream()
-            .map_err(|error| map_error("Sistem sesi yakalama akışı başlatılamadı", error))?;
-
-        let _ = ready.send(Ok(()));
-
-        let frames_per_chunk =
-            (SCREEN_AUDIO_SAMPLE_RATE as usize * SCREEN_AUDIO_FRAME_MS) / 1000;
-        let chunk_bytes = frames_per_chunk * block_align;
-        let mut queue = VecDeque::<u8>::with_capacity(chunk_bytes * 20);
-
-        while !stop.load(Ordering::Relaxed) {
-            let packet_epoch = epoch.load(Ordering::Acquire);
-            loop {
-                let frames = capture_client.get_next_packet_size().map_err(|error| map_error("Sistem sesi cihazı bağlantısı kesildi", error))?;
-                if !matches!(frames, Some(count) if count > 0) || stop.load(Ordering::Relaxed) { break; }
-                capture_client.read_from_device_to_deque(&mut queue).map_err(|error| map_error("Sistem sesi okunamadı", error))?;
-                // Continue draining WASAPI while isolated; never queue the test monitor.
-                if paused.load(Ordering::Acquire) { queue.clear(); }
-            }
-            if paused.load(Ordering::Acquire) || packet_epoch != epoch.load(Ordering::Acquire) { queue.clear(); }
-            while queue.len() >= chunk_bytes {
-                let mut samples = Vec::with_capacity(frames_per_chunk * SCREEN_AUDIO_CHANNELS as usize);
-                for _ in 0..(frames_per_chunk * SCREEN_AUDIO_CHANNELS as usize) {
-                    let b0 = queue.pop_front().unwrap_or(0);
-                    let b1 = queue.pop_front().unwrap_or(0);
-                    let b2 = queue.pop_front().unwrap_or(0);
-                    let b3 = queue.pop_front().unwrap_or(0);
-                    let sample = f32::from_le_bytes([b0, b1, b2, b3]);
-                    let sample = if sample.is_finite() { sample.clamp(-1.0, 1.0) } else { 0.0 };
-                    samples.push((sample * i16::MAX as f32).round() as i16);
-                }
-                // Bound latency/memory when the encoder or network is slow.
-                if sender.is_closed() { stop.store(true, Ordering::Release); break; }
-                let _ = sender.try_send((packet_epoch, samples));
-            }
-
-            let _ = event.wait_for_event(250);
-        }
-
-        let _ = audio_client.stop_stream();
-        Ok(())
-    })();
-
-    if let Err(error) = result {
-        stop.store(true, Ordering::Release);
-        let _ = ready.send(Err(error));
-    }
-    wasapi::deinitialize();
-}
-
-#[cfg(not(windows))]
-fn run_system_audio_loop(
-    _stop: Arc<AtomicBool>,
-    _sender: mpsc::Sender<(u64, Vec<i16>)>,
-    _paused: Arc<AtomicBool>,
-    _epoch: Arc<AtomicU64>,
-    ready: std::sync::mpsc::SyncSender<Result<(), String>>,
-) {
-    let _ = ready.send(Err("Native sistem sesi yalnız Windows masaüstünde destekleniyor.".into()));
-}
-
 #[tauri::command]
 pub async fn native_screen_start(
     state: State<'_, NativeScreenState>,
@@ -259,6 +145,7 @@ pub async fn native_screen_start(
     let width = width.clamp(320, 7680);
     let height = height.clamp(240, 4320);
     let fps = fps.clamp(5, 144);
+    let audio_target = crate::screen_audio::target_for_start(&source_kind, &source_id)?;
 
     let (mut capturer, selected) = tauri::async_runtime::spawn_blocking(move || {
         let capturer = make_capturer(&source_kind)?;
@@ -279,8 +166,6 @@ pub async fn native_screen_start(
         "shakechat-screen",
         RtcVideoSource::Native(video_source.clone()),
     );
-    // The capture worker controls actual dimensions/FPS. Keep encoder ceilings
-    // high enough for live quality changes without republishing the track.
     let max_bitrate = 14_000_000;
     let video_publish = room.local_participant()
         .publish_track(
@@ -326,11 +211,10 @@ pub async fn native_screen_start(
         .await;
     if let Err(error) = audio_publish {
         let _ = room.close().await;
-        return Err(map_error("Native sistem sesi yayınlanamadı", error));
+        return Err(map_error("Native yayın sesi yayınlanamadı", error));
     }
 
     let stop = Arc::new(AtomicBool::new(false));
-
     let audio_paused = Arc::new(AtomicBool::new(false));
     let audio_epoch = Arc::new(AtomicU64::new(0));
     let audio_gate = Arc::new(Mutex::new(()));
@@ -366,10 +250,10 @@ pub async fn native_screen_start(
     let capture_paused = audio_paused.clone();
     let capture_epoch = audio_epoch.clone();
     let audio_thread = match thread::Builder::new()
-        .name("shakechat-system-audio".into())
-        .spawn(move || run_system_audio_loop(audio_thread_stop, audio_tx, capture_paused, capture_epoch, ready_tx)) {
+        .name("shakechat-share-audio".into())
+        .spawn(move || crate::screen_audio::run_audio_loop(audio_target, audio_thread_stop, audio_tx, capture_paused, capture_epoch, ready_tx)) {
         Ok(handle) => handle,
-        Err(error) => { audio_task.abort(); let _ = room.close().await; return Err(map_error("Sistem sesi iş parçacığı başlatılamadı", error)); }
+        Err(error) => { audio_task.abort(); let _ = room.close().await; return Err(map_error("Yayın sesi iş parçacığı başlatılamadı", error)); }
     };
 
     let audio_ready = tauri::async_runtime::spawn_blocking(move || {
@@ -412,7 +296,6 @@ pub async fn native_screen_start(
                     }
                 }
                 capturer.capture_frame();
-                // Capture/conversion time is part of the frame budget.
                 thread::sleep(interval.saturating_sub(started.elapsed()));
             }
         }) {
@@ -500,8 +383,6 @@ pub async fn native_screen_audio_pause(state: State<'_, NativeScreenState>, paus
     session.audio_epoch.fetch_add(1, Ordering::AcqRel);
     session.audio_source.clear_buffer();
     if !paused {
-        // The monitor has stopped before isolation is released. Let the WASAPI
-        // worker drain its <=250ms event wait before resuming system audio.
         tokio::time::sleep(Duration::from_millis(300)).await;
         session.audio_epoch.fetch_add(1, Ordering::AcqRel);
         session.audio_source.clear_buffer();
