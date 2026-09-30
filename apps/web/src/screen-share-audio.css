@@ -1,0 +1,40 @@
+.native-screen-audio-source{
+  min-width:220px;
+  max-width:310px;
+  display:grid;
+  gap:5px;
+  margin-left:auto;
+}
+.native-screen-audio-source[hidden]{display:none!important}
+.native-screen-audio-source>span{
+  color:#7f8792;
+  font-size:9px;
+  font-weight:900;
+  letter-spacing:.055em;
+}
+.native-screen-audio-source select{
+  width:100%;
+  height:38px;
+  border:1px solid #343b46;
+  border-radius:9px;
+  background:#0b0e12;
+  color:#e8eaee;
+  padding:0 30px 0 10px;
+  font-size:11px;
+  font-weight:750;
+  outline:none;
+}
+.native-screen-audio-source select:focus{
+  border-color:#8d5528;
+  box-shadow:0 0 0 2px rgba(255,139,43,.08);
+}
+.native-screen-footer:has(.native-screen-audio-source:not([hidden])) .native-screen-footer-info{
+  flex:1 1 auto;
+}
+@media(max-width:880px){
+  .native-screen-audio-source{min-width:170px;max-width:220px}
+}
+@media(max-width:700px){
+  .native-screen-audio-source{order:3;min-width:100%;max-width:none}
+  .native-screen-footer{flex-wrap:wrap}
+}
