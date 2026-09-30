@@ -60,9 +60,22 @@ jobs:
           VITE_API_ORIGIN: https://chat.shakethat.com.tr
         run: npm run tauri -w @shakechat/desktop -- build
 
+      - name: Smoke test desktop startup
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path 'apps/desktop/src-tauri/target/release/shakechat-desktop.exe'
+          $process = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 12
+          $process.Refresh()
+          if ($process.HasExited) {
+            throw "ShakeChat exited during startup smoke test. Exit code: $($process.ExitCode)"
+          }
+          Stop-Process -Id $process.Id -Force
+          Write-Host 'ShakeChat stayed alive for 12 seconds; startup smoke test passed.' -ForegroundColor Green
+
       - name: Upload screen picker preview installer
         uses: actions/upload-artifact@v4
         with:
-          name: ShakeChat-ScreenPicker-Preview-Setup-Fixed
+          name: ShakeChat-ScreenPicker-Preview-Setup-SmokeTested
           path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
