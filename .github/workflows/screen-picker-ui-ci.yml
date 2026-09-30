@@ -39,7 +39,7 @@ jobs:
       - name: Cargo check desktop
         run: npm run desktop:check
 
-      - name: Prepare unsigned preview bundle config
+      - name: Prepare preview bundle config
         shell: pwsh
         run: |
           $path = 'apps/desktop/src-tauri/tauri.conf.json'
@@ -48,14 +48,21 @@ jobs:
           $config.bundle.createUpdaterArtifacts = $false
           $config | ConvertTo-Json -Depth 20 | Set-Content $path -Encoding UTF8
 
+      - name: Inject updater public key
+        env:
+          SHAKECHAT_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_SIGNING_PUBLIC_KEY }}
+        shell: pwsh
+        run: ./tools/inject-updater-public-key.ps1
+
       - name: Build ShakeChat screen picker preview installer
         env:
+          SHAKECHAT_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_SIGNING_PUBLIC_KEY }}
           VITE_API_ORIGIN: https://chat.shakethat.com.tr
         run: npm run tauri -w @shakechat/desktop -- build
 
       - name: Upload screen picker preview installer
         uses: actions/upload-artifact@v4
         with:
-          name: ShakeChat-ScreenPicker-Preview-Setup
+          name: ShakeChat-ScreenPicker-Preview-Setup-Fixed
           path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
