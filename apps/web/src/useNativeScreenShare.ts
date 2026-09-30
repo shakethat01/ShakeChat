@@ -3,12 +3,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { API_ORIGIN, auth } from './api';
 import { isMicrophoneTestActive, registerMicrophoneTestIsolation } from './microphoneTestIsolation';
 import { screenOwner as ownerIdentity, isNativeScreenIdentity as isSyntheticScreen } from './screenIdentity';
-import { screenOptions, type ScreenSettings } from './screenShareControl';
+import { SCREEN_FRAME_RATES, SCREEN_HEIGHTS, screenOptions, type ScreenSettings } from './screenShareControl';
 import type { useVoice } from './useVoice';
 
 type BaseVoice = ReturnType<typeof useVoice>;
 type NativeScreenSource = { id:string; title:string; kind:'screen'|'window' };
 type NativeScreenToken = { token:string; url:string; room:string; channelId:string; ownerId:string; identity:string };
+type NativeScreenPreview = { width:number; height:number; rgba:number[] };
+type NativeScreenPick = { source:NativeScreenSource; settings:ScreenSettings };
+type PickerTab = 'window'|'screen'|'device';
 
 function isTauriRuntime(){
   if(typeof window==='undefined')return false;
@@ -31,16 +34,27 @@ async function fetchScreenToken(channelId:string):Promise<NativeScreenToken>{
   return response.json() as Promise<NativeScreenToken>;
 }
 
-function pickerButton(source:NativeScreenSource,finish:(source:NativeScreenSource|null)=>void){
-  const button=document.createElement('button');
-  button.type='button';button.className='type-card native-screen-source';
-  const copy=document.createElement('span');
-  const title=document.createElement('b');title.textContent=source.title||(source.kind==='screen'?'Ekran':'Pencere');
-  const detail=document.createElement('small');detail.textContent=source.kind==='screen'?'Tüm ekranı paylaş':'Yalnızca bu pencereyi paylaş';
-  copy.append(title,detail);button.append(copy);button.addEventListener('click',()=>finish(source));return button;
+function sourceTitle(source:NativeScreenSource,index:number){
+  const raw=source.title?.trim();
+  if(source.kind==='screen'&&(!raw||/^(ekran|screen)$/i.test(raw)))return `Ekran ${index+1}`;
+  return raw||(source.kind==='screen'?`Ekran ${index+1}`:'Pencere');
 }
 
-async function pickNativeSource(signal:AbortSignal):Promise<NativeScreenSource|null>{
+async function paintPreview(host:HTMLElement,source:NativeScreenSource,signal:AbortSignal){
+  try{
+    const preview=await invoke<NativeScreenPreview>('native_screen_preview',{sourceKind:source.kind,sourceId:source.id});
+    if(signal.aborted||!host.isConnected||!preview?.width||!preview?.height||!preview.rgba?.length)return;
+    const canvas=document.createElement('canvas');canvas.width=preview.width;canvas.height=preview.height;
+    const context=canvas.getContext('2d');if(!context)return;
+    const pixels=new Uint8ClampedArray(preview.rgba);
+    context.putImageData(new ImageData(pixels,preview.width,preview.height),0,0);
+    host.replaceChildren(canvas);
+  }catch{
+    // Some protected/minimized windows cannot be previewed. Keep the styled placeholder.
+  }
+}
+
+async function pickNativeSource(signal:AbortSignal,initialSettings:ScreenSettings):Promise<NativeScreenPick|null>{
   const sources=await invoke<NativeScreenSource[]>('native_screen_sources');
   if(signal.aborted)return null;
   if(!sources.length)throw new Error('Paylaşılabilir ekran veya pencere bulunamadı.');
@@ -54,17 +68,113 @@ async function pickNativeSource(signal:AbortSignal):Promise<NativeScreenSource|n
     heading.append(h2,p);
     const close=document.createElement('button');close.type='button';close.className='icon-btn';close.textContent='×';close.setAttribute('aria-label','Kapat');
     head.append(heading,close);modal.append(head);
+
+    let selected:NativeScreenSource|null=null;
+    let selectedCard:HTMLButtonElement|null=null;
+    let currentSettings:ScreenSettings={...initialSettings};
+    let activeTab:PickerTab=sources.some(source=>source.kind==='window')?'window':'screen';
+
+    const tabs=document.createElement('div');tabs.className='native-screen-tabs';
+    const body=document.createElement('div');body.className='native-screen-picker-body';
+    const footer=document.createElement('div');footer.className='native-screen-footer';
+
+    const footerInfo=document.createElement('div');footerInfo.className='native-screen-footer-info';
+    const footerIcon=document.createElement('div');footerIcon.className='native-screen-footer-icon';footerIcon.textContent='◉';
+    const footerCopy=document.createElement('div');footerCopy.className='native-screen-footer-copy';
+    const footerTitle=document.createElement('b');footerTitle.textContent='Paylaşım kaynağı seç';
+    const footerMeta=document.createElement('div');footerMeta.className='native-screen-footer-meta';
+    const qualityMeta=document.createElement('span');
+    const audioMeta=document.createElement('span');audioMeta.className='audio';audioMeta.textContent='🔊 Sistem sesi dahil';
+    footerMeta.append(qualityMeta,audioMeta);footerCopy.append(footerTitle,footerMeta);footerInfo.append(footerIcon,footerCopy);
+
+    const actions=document.createElement('div');actions.className='native-screen-footer-actions';
+    const pills=document.createElement('div');pills.className='native-screen-quality-pills';
+    const sd=document.createElement('button');sd.type='button';sd.textContent='SD';sd.title='720p';
+    const hd=document.createElement('button');hd.type='button';hd.textContent='HD';hd.title='1080p veya üstü';
+    pills.append(sd,hd);
+    const settingsButton=document.createElement('button');settingsButton.type='button';settingsButton.className='native-screen-settings-button';settingsButton.textContent='⚙';settingsButton.setAttribute('aria-label','Yayın kalitesi');
+    const publish=document.createElement('button');publish.type='button';publish.className='native-screen-publish';publish.disabled=true;publish.innerHTML='<span>◉</span><span>Yayın yap</span>';
+    actions.append(pills,settingsButton,publish);footer.append(footerInfo,actions);
+
+    const popover=document.createElement('div');popover.className='native-screen-quality-popover';popover.hidden=true;
+    const heightLabel=document.createElement('label');heightLabel.textContent='Çözünürlük';
+    const heightSelect=document.createElement('select');
+    SCREEN_HEIGHTS.forEach(height=>{const option=document.createElement('option');option.value=String(height);option.textContent=`${height}p`;heightSelect.append(option)});
+    heightLabel.append(heightSelect);
+    const fpsLabel=document.createElement('label');fpsLabel.textContent='FPS';
+    const fpsSelect=document.createElement('select');
+    SCREEN_FRAME_RATES.forEach(fps=>{const option=document.createElement('option');option.value=String(fps);option.textContent=`${fps} FPS`;fpsSelect.append(option)});
+    fpsLabel.append(fpsSelect);popover.append(heightLabel,fpsLabel);footer.append(popover);
+
+    const updateQuality=()=>{
+      qualityMeta.textContent=`${currentSettings.height}p · ${currentSettings.fps} FPS`;
+      heightSelect.value=String(currentSettings.height);fpsSelect.value=String(currentSettings.fps);
+      sd.classList.toggle('active',currentSettings.height<=720);hd.classList.toggle('active',currentSettings.height>=1080);
+    };
+    const updateSelectionCopy=()=>{
+      if(!selected){footerTitle.textContent='Paylaşım kaynağı seç';footerIcon.textContent='◉';publish.disabled=true;return}
+      const index=sources.filter(source=>source.kind===selected?.kind).findIndex(source=>source.id===selected?.id);
+      footerTitle.textContent=selected.kind==='screen'?sourceTitle(selected,Math.max(0,index)):'Uygulama';
+      footerIcon.textContent=selected.kind==='screen'?'▣':'▤';publish.disabled=false;
+    };
+
+    const setSelected=(source:NativeScreenSource,card:HTMLButtonElement)=>{
+      selectedCard?.classList.remove('selected');selected=source;selectedCard=card;card.classList.add('selected');updateSelectionCopy();
+    };
+
+    const renderTab=()=>{
+      body.replaceChildren();selected=null;selectedCard=null;updateSelectionCopy();
+      [...tabs.children].forEach(element=>{
+        const button=element as HTMLButtonElement;button.classList.toggle('active',button.dataset.tab===activeTab);
+      });
+      if(activeTab==='device'){
+        const empty=document.createElement('div');empty.className='native-screen-empty';
+        empty.innerHTML='<div><strong>Kamera paylaşımı</strong><span>Kameranı açmak için ses kanalındaki kamera düğmesini kullan. Ekran paylaşımı penceresinden kamera başlatılmaz.</span></div>';
+        body.append(empty);return;
+      }
+      const group=sources.filter(source=>source.kind===activeTab);
+      if(!group.length){
+        const empty=document.createElement('div');empty.className='native-screen-empty';empty.innerHTML='<div><strong>Kaynak bulunamadı</strong><span>Bu türde paylaşılabilir bir kaynak görünmüyor.</span></div>';body.append(empty);return;
+      }
+      const grid=document.createElement('div');grid.className='native-screen-grid';
+      group.forEach((source,index)=>{
+        const card=document.createElement('button');card.type='button';card.className='native-screen-card';card.dataset.sourceId=source.id;
+        const preview=document.createElement('div');preview.className='native-screen-card-preview';
+        const placeholder=document.createElement('div');placeholder.className='native-screen-preview-placeholder';
+        const placeholderIcon=document.createElement('strong');placeholderIcon.textContent=source.kind==='screen'?'▣':'▤';
+        const placeholderText=document.createElement('span');placeholderText.textContent='Önizleme hazırlanıyor';placeholder.append(placeholderIcon,placeholderText);preview.append(placeholder);
+        const copy=document.createElement('div');copy.className='native-screen-card-copy';
+        const badge=document.createElement('div');badge.className='native-screen-card-badge';badge.textContent=source.kind==='screen'?'▣':'▤';
+        const text=document.createElement('span');const title=document.createElement('b');title.textContent=sourceTitle(source,index);
+        const detail=document.createElement('small');detail.textContent=source.kind==='screen'?'Tüm ekranı paylaş':'Yalnızca bu pencereyi paylaş';text.append(title,detail);copy.append(badge,text);card.append(preview,copy);
+        card.addEventListener('click',()=>setSelected(source,card));
+        card.addEventListener('dblclick',()=>{setSelected(source,card);finish({source,settings:{...currentSettings}})});
+        grid.append(card);
+        window.setTimeout(()=>{if(!signal.aborted&&dialog.isConnected)void paintPreview(preview,source,signal)},Math.min(index*45,360));
+      });
+      body.append(grid);
+    };
+
+    const tabDefinitions:[PickerTab,string,string][]=[['window','Uygulamalar','▤'],['screen','Tüm Ekran','▣'],['device','Cihazlar','●']];
+    tabDefinitions.forEach(([key,label,icon])=>{
+      const button=document.createElement('button');button.type='button';button.className='native-screen-tab';button.dataset.tab=key;
+      const iconSpan=document.createElement('span');iconSpan.className='native-screen-tab-icon';iconSpan.textContent=icon;
+      const text=document.createElement('span');text.textContent=label;button.append(iconSpan,text);
+      button.addEventListener('click',()=>{activeTab=key;renderTab()});tabs.append(button);
+    });
+
     const cancel=()=>finish(null);
-    const finish=(source:NativeScreenSource|null)=>{signal.removeEventListener('abort',cancel);try{dialog.close()}catch{}dialog.remove();resolve(source)};
+    const finish=(pick:NativeScreenPick|null)=>{signal.removeEventListener('abort',cancel);try{dialog.close()}catch{}dialog.remove();resolve(pick)};
     signal.addEventListener('abort',cancel,{once:true});
     close.addEventListener('click',()=>finish(null));dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null)},{once:true});
-    for(const kind of ['screen','window'] as const){
-      const group=sources.filter(source=>source.kind===kind);if(!group.length)continue;
-      const label=document.createElement('div');label.className='section';label.textContent=kind==='screen'?'EKRANLAR':'PENCERELER';modal.append(label);
-      const list=document.createElement('div');list.className='native-screen-source-list';
-      group.forEach(source=>list.append(pickerButton(source,finish)));modal.append(list);
-    }
-    dialog.append(modal);document.body.append(dialog);dialog.showModal();
+    publish.addEventListener('click',()=>{if(selected)finish({source:selected,settings:{...currentSettings}})});
+    sd.addEventListener('click',()=>{currentSettings={height:720,fps:Math.min(currentSettings.fps,60)};updateQuality()});
+    hd.addEventListener('click',()=>{currentSettings={height:Math.max(1080,currentSettings.height),fps:currentSettings.fps};updateQuality()});
+    settingsButton.addEventListener('click',()=>{popover.hidden=!popover.hidden});
+    heightSelect.addEventListener('change',()=>{currentSettings={...currentSettings,height:Number(heightSelect.value)};updateQuality()});
+    fpsSelect.addEventListener('change',()=>{currentSettings={...currentSettings,fps:Number(fpsSelect.value)};updateQuality()});
+
+    modal.append(tabs,body,footer);dialog.append(modal);document.body.append(dialog);updateQuality();renderTab();dialog.showModal();
   });
 }
 
@@ -119,18 +229,19 @@ export function useNativeScreenShare(voice:BaseVoice,onError:(message:string)=>v
     const picker=new AbortController();pickerRef.current=picker;
     channelRef.current=channel;busyRef.current=true;setBusy(true);
     try{
-      const source=await pickNativeSource(picker.signal);
-      if(!source||!valid(generation,channel))return;
+      const picked=await pickNativeSource(picker.signal,settingsRef.current);
+      if(!picked||!valid(generation,channel))return;
+      const {source,settings:next}=picked;
       const credentials=await fetchScreenToken(channel);
       if(!valid(generation,channel))return;
-      const next=settingsRef.current,options=screenOptions(next);
+      const options=screenOptions(next);
       const started=await enqueue(async()=>{
         if(!valid(generation,channel)||isMicrophoneTestActive())return false;
         await invoke('native_screen_start',{url:credentials.url,token:credentials.token,sourceKind:source.kind,sourceId:source.id,width:options.resolution.width,height:options.resolution.height,fps:options.resolution.frameRate});
         return true;
       });
       if(!started||!valid(generation,channel))return;
-      sourceRef.current=source;activeRef.current=true;setActive(true);setSettings(next);
+      sourceRef.current=source;settingsRef.current=next;activeRef.current=true;setActive(true);setSettings(next);
     }catch(error){if(valid(generation,channel))errorRef.current(error instanceof Error?error.message:String(error))}
     finally{if(generationRef.current===generation){pickerRef.current=null;busyRef.current=false;if(mountedRef.current)setBusy(false)}}
   },[desktop,enqueue,stop,valid,voice.toggleScreenShare]);
@@ -152,7 +263,7 @@ export function useNativeScreenShare(voice:BaseVoice,onError:(message:string)=>v
     const generation=generationRef.current,channel=channelRef.current;
     const picker=new AbortController();pickerRef.current=picker;
     busyRef.current=true;setBusy(true);
-    try{const source=await pickNativeSource(picker.signal);if(source)await update(source,settingsRef.current,generation,channel)}
+    try{const picked=await pickNativeSource(picker.signal,settingsRef.current);if(picked)await update(picked.source,picked.settings,generation,channel)}
     catch(error){if(valid(generation,channel))errorRef.current(error instanceof Error?error.message:String(error))}
     finally{if(generationRef.current===generation){pickerRef.current=null;busyRef.current=false;if(mountedRef.current)setBusy(false)}}
   },[desktop,update,valid,voice.changeScreenSource]);
