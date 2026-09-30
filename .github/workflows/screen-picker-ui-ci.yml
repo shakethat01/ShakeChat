@@ -36,4 +36,5 @@ jobs:
         run: npm run test -w @shakechat/web
 
       - name: Cargo check desktop
+        if: always()
         run: npm run desktop:check
