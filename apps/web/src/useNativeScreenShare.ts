@@ -10,7 +10,8 @@ type BaseVoice = ReturnType<typeof useVoice>;
 type NativeScreenSource = { id:string; title:string; kind:'screen'|'window' };
 type NativeScreenToken = { token:string; url:string; room:string; channelId:string; ownerId:string; identity:string };
 type NativeScreenPreview = { width:number; height:number; rgba:number[] };
-type NativeScreenPick = { source:NativeScreenSource; settings:ScreenSettings };
+type NativeScreenAudioPick = { mode:'none'|'system'|'window'; sourceId?:string; label:string };
+type NativeScreenPick = { source:NativeScreenSource; settings:ScreenSettings; audio:NativeScreenAudioPick };
 type PickerTab = 'window'|'screen'|'device';
 
 function isTauriRuntime(){
@@ -40,6 +41,12 @@ function sourceTitle(source:NativeScreenSource,index:number){
   return raw||(source.kind==='screen'?`Ekran ${index+1}`:'Pencere');
 }
 
+function audioLabel(audio:NativeScreenAudioPick){
+  if(audio.mode==='none')return '🔇 Ses paylaşma';
+  if(audio.mode==='system')return '⚠ Tüm sistem sesi · Discord dahil';
+  return `🔊 ${audio.label}`;
+}
+
 async function paintPreview(host:HTMLElement,source:NativeScreenSource,signal:AbortSignal){
   try{
     const preview=await invoke<NativeScreenPreview>('native_screen_preview',{sourceKind:source.kind,sourceId:source.id});
@@ -58,13 +65,15 @@ async function pickNativeSource(signal:AbortSignal,initialSettings:ScreenSetting
   const sources=await invoke<NativeScreenSource[]>('native_screen_sources');
   if(signal.aborted)return null;
   if(!sources.length)throw new Error('Paylaşılabilir ekran veya pencere bulunamadı.');
+  const windowSources=sources.filter(source=>source.kind==='window');
+
   return new Promise(resolve=>{
     const dialog=document.createElement('dialog');dialog.className='modal-backdrop native-screen-picker-backdrop';
     const modal=document.createElement('div');modal.className='modal native-screen-picker';
     const head=document.createElement('div');head.className='modal-head';
     const heading=document.createElement('div');
     const h2=document.createElement('h2');h2.textContent='Ne paylaşmak istiyorsun?';
-    const p=document.createElement('p');p.textContent='Bir ekran veya pencere seç. Bilgisayar sesi tüm uygulamalardan paylaşılır.';
+    const p=document.createElement('p');p.textContent='Uygulama paylaşımında yalnız o uygulamanın sesi gider. Tüm ekranda yayın sesini ayrıca seçersin.';
     heading.append(h2,p);
     const close=document.createElement('button');close.type='button';close.className='icon-btn';close.textContent='×';close.setAttribute('aria-label','Kapat');
     head.append(heading,close);modal.append(head);
@@ -73,6 +82,8 @@ async function pickNativeSource(signal:AbortSignal,initialSettings:ScreenSetting
     let selectedCard:HTMLButtonElement|null=null;
     let currentSettings:ScreenSettings={...initialSettings};
     let activeTab:PickerTab=sources.some(source=>source.kind==='window')?'window':'screen';
+    let selectedAudio:NativeScreenAudioPick={mode:'none',label:'Ses paylaşma'};
+    let lastWindowAudio:NativeScreenAudioPick|null=null;
 
     const tabs=document.createElement('div');tabs.className='native-screen-tabs';
     const body=document.createElement('div');body.className='native-screen-picker-body';
@@ -84,8 +95,18 @@ async function pickNativeSource(signal:AbortSignal,initialSettings:ScreenSetting
     const footerTitle=document.createElement('b');footerTitle.textContent='Paylaşım kaynağı seç';
     const footerMeta=document.createElement('div');footerMeta.className='native-screen-footer-meta';
     const qualityMeta=document.createElement('span');
-    const audioMeta=document.createElement('span');audioMeta.className='audio';audioMeta.textContent='🔊 Sistem sesi dahil';
+    const audioMeta=document.createElement('span');audioMeta.className='audio';audioMeta.textContent='🔇 Ses kaynağı seçilecek';
     footerMeta.append(qualityMeta,audioMeta);footerCopy.append(footerTitle,footerMeta);footerInfo.append(footerIcon,footerCopy);
+
+    const audioWrap=document.createElement('label');audioWrap.className='native-screen-audio-source';
+    const audioCaption=document.createElement('span');audioCaption.textContent='YAYIN SESİ';
+    const audioSelect=document.createElement('select');audioSelect.setAttribute('aria-label','Tüm ekran yayın sesi');
+    const silentOption=document.createElement('option');silentOption.value='none';silentOption.textContent='Ses paylaşma';audioSelect.append(silentOption);
+    windowSources.forEach((source,index)=>{
+      const option=document.createElement('option');option.value=`window:${source.id}`;option.textContent=`Uygulama: ${sourceTitle(source,index)}`;audioSelect.append(option);
+    });
+    const systemOption=document.createElement('option');systemOption.value='system';systemOption.textContent='Tüm sistem sesi (Discord dahil)';audioSelect.append(systemOption);
+    audioWrap.append(audioCaption,audioSelect);audioWrap.hidden=true;
 
     const actions=document.createElement('div');actions.className='native-screen-footer-actions';
     const pills=document.createElement('div');pills.className='native-screen-quality-pills';
@@ -94,7 +115,7 @@ async function pickNativeSource(signal:AbortSignal,initialSettings:ScreenSetting
     pills.append(sd,hd);
     const settingsButton=document.createElement('button');settingsButton.type='button';settingsButton.className='native-screen-settings-button';settingsButton.textContent='⚙';settingsButton.setAttribute('aria-label','Yayın kalitesi');
     const publish=document.createElement('button');publish.type='button';publish.className='native-screen-publish';publish.disabled=true;publish.innerHTML='<span>◉</span><span>Yayın yap</span>';
-    actions.append(pills,settingsButton,publish);footer.append(footerInfo,actions);
+    actions.append(pills,settingsButton,publish);footer.append(footerInfo,audioWrap,actions);
 
     const popover=document.createElement('div');popover.className='native-screen-quality-popover';popover.hidden=true;
     const heightLabel=document.createElement('label');heightLabel.textContent='Çözünürlük';
@@ -111,22 +132,45 @@ async function pickNativeSource(signal:AbortSignal,initialSettings:ScreenSetting
       heightSelect.value=String(currentSettings.height);fpsSelect.value=String(currentSettings.fps);
       sd.classList.toggle('active',currentSettings.height<=720);hd.classList.toggle('active',currentSettings.height>=1080);
     };
+
+    const updateAudioUi=()=>{
+      audioWrap.hidden=activeTab!=='screen';
+      audioMeta.textContent=selected?.kind==='window'?'🔊 Sadece bu uygulamanın sesi':audioLabel(selectedAudio);
+    };
+
     const updateSelectionCopy=()=>{
-      if(!selected){footerTitle.textContent='Paylaşım kaynağı seç';footerIcon.textContent='◉';publish.disabled=true;return}
+      if(!selected){footerTitle.textContent='Paylaşım kaynağı seç';footerIcon.textContent='◉';publish.disabled=true;updateAudioUi();return}
       const index=sources.filter(source=>source.kind===selected?.kind).findIndex(source=>source.id===selected?.id);
-      footerTitle.textContent=selected.kind==='screen'?sourceTitle(selected,Math.max(0,index)):'Uygulama';
-      footerIcon.textContent=selected.kind==='screen'?'▣':'▤';publish.disabled=false;
+      footerTitle.textContent=selected.kind==='screen'?sourceTitle(selected,Math.max(0,index)):sourceTitle(selected,Math.max(0,index));
+      footerIcon.textContent=selected.kind==='screen'?'▣':'▤';publish.disabled=false;updateAudioUi();
     };
 
     const setSelected=(source:NativeScreenSource,card:HTMLButtonElement)=>{
-      selectedCard?.classList.remove('selected');selected=source;selectedCard=card;card.classList.add('selected');updateSelectionCopy();
+      selectedCard?.classList.remove('selected');selected=source;selectedCard=card;card.classList.add('selected');
+      if(source.kind==='window'){
+        const index=windowSources.findIndex(item=>item.id===source.id);
+        lastWindowAudio={mode:'window',sourceId:source.id,label:sourceTitle(source,Math.max(0,index))};
+      }else if(selectedAudio.mode==='none'&&lastWindowAudio){
+        selectedAudio=lastWindowAudio;
+        audioSelect.value=`window:${lastWindowAudio.sourceId}`;
+      }
+      updateSelectionCopy();
+    };
+
+    const currentPick=():NativeScreenPick|null=>{
+      if(!selected)return null;
+      const audio:NativeScreenAudioPick=selected.kind==='window'
+        ? {mode:'window',sourceId:selected.id,label:sourceTitle(selected,Math.max(0,windowSources.findIndex(item=>item.id===selected?.id)))}
+        : selectedAudio;
+      return {source:selected,settings:{...currentSettings},audio};
     };
 
     const renderTab=()=>{
-      body.replaceChildren();selected=null;selectedCard=null;updateSelectionCopy();
+      body.replaceChildren();selected=null;selectedCard=null;
       [...tabs.children].forEach(element=>{
         const button=element as HTMLButtonElement;button.classList.toggle('active',button.dataset.tab===activeTab);
       });
+      updateSelectionCopy();
       if(activeTab==='device'){
         const empty=document.createElement('div');empty.className='native-screen-empty';
         empty.innerHTML='<div><strong>Kamera paylaşımı</strong><span>Kameranı açmak için ses kanalındaki kamera düğmesini kullan. Ekran paylaşımı penceresinden kamera başlatılmaz.</span></div>';
@@ -146,9 +190,9 @@ async function pickNativeSource(signal:AbortSignal,initialSettings:ScreenSetting
         const copy=document.createElement('div');copy.className='native-screen-card-copy';
         const badge=document.createElement('div');badge.className='native-screen-card-badge';badge.textContent=source.kind==='screen'?'▣':'▤';
         const text=document.createElement('span');const title=document.createElement('b');title.textContent=sourceTitle(source,index);
-        const detail=document.createElement('small');detail.textContent=source.kind==='screen'?'Tüm ekranı paylaş':'Yalnızca bu pencereyi paylaş';text.append(title,detail);copy.append(badge,text);card.append(preview,copy);
+        const detail=document.createElement('small');detail.textContent=source.kind==='screen'?'Tüm ekranı paylaş · sesi aşağıdan seç':'Yalnızca bu pencere + bu uygulamanın sesi';text.append(title,detail);copy.append(badge,text);card.append(preview,copy);
         card.addEventListener('click',()=>setSelected(source,card));
-        card.addEventListener('dblclick',()=>{setSelected(source,card);finish({source,settings:{...currentSettings}})});
+        card.addEventListener('dblclick',()=>{setSelected(source,card);if(source.kind==='window'){const pick=currentPick();if(pick)finish(pick)}});
         grid.append(card);
         window.setTimeout(()=>{if(!signal.aborted&&dialog.isConnected)void paintPreview(preview,source,signal)},Math.min(index*45,360));
       });
@@ -167,7 +211,18 @@ async function pickNativeSource(signal:AbortSignal,initialSettings:ScreenSetting
     const finish=(pick:NativeScreenPick|null)=>{signal.removeEventListener('abort',cancel);try{dialog.close()}catch{}dialog.remove();resolve(pick)};
     signal.addEventListener('abort',cancel,{once:true});
     close.addEventListener('click',()=>finish(null));dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null)},{once:true});
-    publish.addEventListener('click',()=>{if(selected)finish({source:selected,settings:{...currentSettings}})});
+    publish.addEventListener('click',()=>{const pick=currentPick();if(pick)finish(pick)});
+    audioSelect.addEventListener('change',()=>{
+      const value=audioSelect.value;
+      if(value==='system')selectedAudio={mode:'system',label:'Tüm sistem sesi'};
+      else if(value.startsWith('window:')){
+        const id=value.slice('window:'.length);
+        const source=windowSources.find(item=>item.id===id);
+        const index=windowSources.findIndex(item=>item.id===id);
+        selectedAudio={mode:'window',sourceId:id,label:source?sourceTitle(source,Math.max(0,index)):'Uygulama sesi'};
+      }else selectedAudio={mode:'none',label:'Ses paylaşma'};
+      updateAudioUi();
+    });
     sd.addEventListener('click',()=>{currentSettings={height:720,fps:Math.min(currentSettings.fps,60)};updateQuality()});
     hd.addEventListener('click',()=>{currentSettings={height:Math.max(1080,currentSettings.height),fps:currentSettings.fps};updateQuality()});
     settingsButton.addEventListener('click',()=>{popover.hidden=!popover.hidden});
@@ -188,6 +243,7 @@ export function useNativeScreenShare(voice:BaseVoice,onError:(message:string)=>v
   const [busy,setBusy]=useState(false);
   const [settings,setSettings]=useState<ScreenSettings>(voice.screenSettings??{height:1080,fps:60});
   const sourceRef=useRef<NativeScreenSource|null>(null);
+  const audioRef=useRef<NativeScreenAudioPick>({mode:'none',label:'Ses paylaşma'});
   const settingsRef=useRef(settings);
   const activeRef=useRef(false);
   const busyRef=useRef(false);
@@ -208,7 +264,7 @@ export function useNativeScreenShare(voice:BaseVoice,onError:(message:string)=>v
 
   const stop=useCallback(async()=>{
     generationRef.current+=1;pickerRef.current?.abort();pickerRef.current=null;
-    sourceRef.current=null;channelRef.current='';activeRef.current=false;busyRef.current=false;
+    sourceRef.current=null;audioRef.current={mode:'none',label:'Ses paylaşma'};channelRef.current='';activeRef.current=false;busyRef.current=false;
     if(mountedRef.current){setActive(false);setBusy(false)}
     await enqueue(()=>invoke('native_screen_stop'));
   },[enqueue]);
@@ -216,6 +272,25 @@ export function useNativeScreenShare(voice:BaseVoice,onError:(message:string)=>v
   useEffect(()=>{
     if(!active&&!busy){settingsRef.current=voice.screenSettings;setSettings(voice.screenSettings)}
   },[active,busy,voice.screenSettings]);
+
+  const startPick=useCallback(async(picked:NativeScreenPick,generation:number,channel:string)=>{
+    const {source,settings:next,audio}=picked;
+    const credentials=await fetchScreenToken(channel);
+    if(!valid(generation,channel))return false;
+    const options=screenOptions(next);
+    return enqueue(async()=>{
+      if(!valid(generation,channel)||isMicrophoneTestActive())return false;
+      if(source.kind==='screen'){
+        await invoke('native_screen_audio_target',{mode:audio.mode,sourceId:audio.sourceId??null});
+      }else{
+        await invoke('native_screen_audio_target',{mode:'none',sourceId:null});
+      }
+      await invoke('native_screen_start',{url:credentials.url,token:credentials.token,sourceKind:source.kind,sourceId:source.id,width:options.resolution.width,height:options.resolution.height,fps:options.resolution.frameRate});
+      if(!valid(generation,channel))return false;
+      sourceRef.current=source;audioRef.current=audio;settingsRef.current=next;
+      return true;
+    });
+  },[enqueue,valid]);
 
   const toggleScreenShare=useCallback(async()=>{
     if(!desktop)return voice.toggleScreenShare();
@@ -231,20 +306,12 @@ export function useNativeScreenShare(voice:BaseVoice,onError:(message:string)=>v
     try{
       const picked=await pickNativeSource(picker.signal,settingsRef.current);
       if(!picked||!valid(generation,channel))return;
-      const {source,settings:next}=picked;
-      const credentials=await fetchScreenToken(channel);
-      if(!valid(generation,channel))return;
-      const options=screenOptions(next);
-      const started=await enqueue(async()=>{
-        if(!valid(generation,channel)||isMicrophoneTestActive())return false;
-        await invoke('native_screen_start',{url:credentials.url,token:credentials.token,sourceKind:source.kind,sourceId:source.id,width:options.resolution.width,height:options.resolution.height,fps:options.resolution.frameRate});
-        return true;
-      });
+      const started=await startPick(picked,generation,channel);
       if(!started||!valid(generation,channel))return;
-      sourceRef.current=source;settingsRef.current=next;activeRef.current=true;setActive(true);setSettings(next);
+      activeRef.current=true;setActive(true);setSettings(picked.settings);
     }catch(error){if(valid(generation,channel))errorRef.current(error instanceof Error?error.message:String(error))}
     finally{if(generationRef.current===generation){pickerRef.current=null;busyRef.current=false;if(mountedRef.current)setBusy(false)}}
-  },[desktop,enqueue,stop,valid,voice.toggleScreenShare]);
+  },[desktop,startPick,stop,valid,voice.toggleScreenShare]);
 
   const update=useCallback(async(source:NativeScreenSource,next:ScreenSettings,generation:number,channel:string)=>{
     const options=screenOptions(next);
@@ -263,10 +330,15 @@ export function useNativeScreenShare(voice:BaseVoice,onError:(message:string)=>v
     const generation=generationRef.current,channel=channelRef.current;
     const picker=new AbortController();pickerRef.current=picker;
     busyRef.current=true;setBusy(true);
-    try{const picked=await pickNativeSource(picker.signal,settingsRef.current);if(picked)await update(picked.source,picked.settings,generation,channel)}
+    try{
+      const picked=await pickNativeSource(picker.signal,settingsRef.current);
+      if(!picked||!valid(generation,channel))return;
+      const restarted=await startPick(picked,generation,channel);
+      if(restarted&&valid(generation,channel)){activeRef.current=true;setActive(true);setSettings(picked.settings)}
+    }
     catch(error){if(valid(generation,channel))errorRef.current(error instanceof Error?error.message:String(error))}
     finally{if(generationRef.current===generation){pickerRef.current=null;busyRef.current=false;if(mountedRef.current)setBusy(false)}}
-  },[desktop,update,valid,voice.changeScreenSource]);
+  },[desktop,startPick,valid,voice.changeScreenSource]);
 
   const changeScreenSettings=useCallback(async(next:ScreenSettings)=>{
     if(!desktop)return voice.changeScreenSettings(next);
@@ -278,7 +350,6 @@ export function useNativeScreenShare(voice:BaseVoice,onError:(message:string)=>v
     finally{if(generationRef.current===generation){busyRef.current=false;if(mountedRef.current)setBusy(false)}}
   },[desktop,update,valid,voice.changeScreenSettings]);
 
-  // Await the native mute before the microphone test is allowed to play a monitor.
   useEffect(()=>{
     if(!desktop)return;
     return registerMicrophoneTestIsolation(async()=>{
@@ -319,7 +390,6 @@ export function useNativeScreenShare(voice:BaseVoice,onError:(message:string)=>v
     await voiceRef.current.leave();
   },[desktop,stop]);
 
-  // Apply the same owner mapping to browser viewers and desktop viewers.
   const participants=useMemo(()=>{
     const synthetic=new Map(participantsRaw.filter(person=>isSyntheticScreen(person.identity)).map(person=>[ownerIdentity(person.identity),person]));
     return participantsRaw.filter(person=>!isSyntheticScreen(person.identity)).map(person=>{
