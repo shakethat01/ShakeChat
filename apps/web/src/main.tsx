@@ -22,4 +22,5 @@ import './mic-test.css';
 import './release-1.9.10-ui.css';
 import './screen-share-picker.css';
 import './stream-polish.css';
+import './screen-share-audio.css';
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /><GlobalUserContext /><SidebarInteractions /><VoiceSlotGuard /><DomIdentityBridge /><MemberListUX /><QuickSwitcher /><MicrophoneTestSettingsBridge /><ScreenShareUX /></React.StrictMode>);
