@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 
 const PREVIEW_KEY='shakechat.screen-preview-hidden.v1';
 const AUDIO_KEY='shakechat.screen-audio-muted.v1';
+type NativeScreenSource={id:string;title:string;kind:'screen'|'window'};
 
 function storedFlag(key:string){
   try{return localStorage.getItem(key)==='1'}catch{return false}
@@ -73,10 +74,71 @@ function decoratePicker(picker:HTMLElement){
   const popover=picker.querySelector<HTMLElement>('.native-screen-quality-popover');
   const settingsButton=picker.querySelector<HTMLButtonElement>('.native-screen-settings-button');
   const publish=picker.querySelector<HTMLButtonElement>('.native-screen-publish');
-  if(!popover||!settingsButton||!publish)return;
+  const footer=picker.querySelector<HTMLElement>('.native-screen-footer');
+  const footerMeta=picker.querySelector<HTMLElement>('.native-screen-footer-meta .audio');
+  const subtitle=picker.querySelector<HTMLElement>('.modal-head p');
+  if(!popover||!settingsButton||!publish||!footer)return;
   const selects=[...popover.querySelectorAll<HTMLSelectElement>('select')];
   if(selects.length<2)return;
   picker.dataset.streamPolished='1';
+  if(subtitle)subtitle.textContent='Uygulama paylaşımında yalnız o uygulamanın sesi gider. Tüm ekranda ses kaynağını sen seçersin.';
+
+  const audioSource=document.createElement('label');audioSource.className='native-screen-audio-source';audioSource.hidden=true;
+  const audioLabel=document.createElement('span');audioLabel.textContent='SES KAYNAĞI';
+  const audioSelect=document.createElement('select');audioSelect.setAttribute('aria-label','Ekran paylaşımı ses kaynağı');
+  const silent=document.createElement('option');silent.value='none';silent.textContent='Ses paylaşma';audioSelect.append(silent);
+  const system=document.createElement('option');system.value='system';system.textContent='Tüm sistem sesi (Discord dahil)';audioSelect.append(system);
+  audioSource.append(audioLabel,audioSelect);
+  footer.insertBefore(audioSource,footer.querySelector('.native-screen-footer-actions'));
+
+  let audioTargetReady:Promise<unknown>=Promise.resolve();
+  const applyAudioTarget=()=>{
+    if(audioSelect.value==='none'){
+      if(footerMeta)footerMeta.textContent='🔇 Ses paylaşılmıyor';
+      audioTargetReady=invoke('native_screen_audio_target',{mode:'none',sourceId:null}).catch(()=>undefined);
+    }else if(audioSelect.value==='system'){
+      if(footerMeta)footerMeta.textContent='⚠ Tüm sistem sesi · Discord dahil';
+      audioTargetReady=invoke('native_screen_audio_target',{mode:'system',sourceId:null}).catch(()=>undefined);
+    }else{
+      const option=audioSelect.selectedOptions[0];
+      if(footerMeta)footerMeta.textContent=`🔊 ${option?.textContent||'Uygulama sesi'}`;
+      audioTargetReady=invoke('native_screen_audio_target',{mode:'window',sourceId:audioSelect.value}).catch(()=>undefined);
+    }
+  };
+  audioSelect.addEventListener('change',applyAudioTarget);
+  void invoke<NativeScreenSource[]>('native_screen_sources').then(sources=>{
+    sources.filter(source=>source.kind==='window').forEach(source=>{
+      const option=document.createElement('option');option.value=source.id;option.textContent=source.title||'Uygulama';audioSelect.append(option);
+    });
+  }).catch(()=>undefined);
+
+  const selectedTab=()=>picker.querySelector<HTMLButtonElement>('.native-screen-tab.active')?.dataset.tab;
+  const syncAudioSurface=()=>{
+    const tab=selectedTab();
+    const selected=picker.querySelector<HTMLButtonElement>('.native-screen-card.selected');
+    if(tab==='screen'){
+      audioSource.hidden=false;
+      applyAudioTarget();
+    }else{
+      audioSource.hidden=true;
+      if(tab==='window'&&selected&&footerMeta)footerMeta.textContent='🔊 Yalnızca bu uygulamanın sesi';
+    }
+  };
+  picker.addEventListener('click',event=>{
+    const target=event.target as HTMLElement;
+    if(target.closest('.native-screen-tab')||target.closest('.native-screen-card'))window.setTimeout(syncAudioSurface,0);
+  });
+
+  let releasePublish=false;
+  publish.addEventListener('click',event=>{
+    if(releasePublish||selectedTab()!=='screen')return;
+    event.preventDefault();event.stopImmediatePropagation();
+    void audioTargetReady.finally(()=>{
+      releasePublish=true;
+      publish.click();
+      releasePublish=false;
+    });
+  },true);
 
   const heightSelect=selects[0];
   const fpsSelect=selects[1];
@@ -94,7 +156,7 @@ function decoratePicker(picker:HTMLElement){
   modes.append(game,screen,custom);
 
   const divider=document.createElement('div');divider.className='native-screen-popover-divider';
-  const audio=createSwitchRow('Yayın sesini sustur','Bilgisayar sesini karşı tarafa gönderme',storedFlag(AUDIO_KEY),value=>storeFlag(AUDIO_KEY,value));
+  const audio=createSwitchRow('Yayın sesini sustur','Seçtiğin yayın sesini karşı tarafa gönderme',storedFlag(AUDIO_KEY),value=>storeFlag(AUDIO_KEY,value));
 
   const advanced=document.createElement('button');advanced.type='button';advanced.className='native-screen-advanced-row';
   advanced.innerHTML='<span><strong>Gelişmiş</strong><small>Ön izleme ve özel kalite seçenekleri</small></span><b>›</b>';
@@ -143,6 +205,7 @@ function decoratePicker(picker:HTMLElement){
     window.setTimeout(()=>void invoke('native_screen_audio_pause',{paused:muted}).catch(()=>undefined),850);
   });
   syncMode();
+  syncAudioSurface();
 }
 
 export function ScreenShareUX(){
