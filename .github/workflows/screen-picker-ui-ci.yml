@@ -39,10 +39,10 @@ jobs:
       - name: Cargo check desktop
         run: npm run desktop:check
 
-      - name: Build ShakeChat screen picker preview
+      - name: Build ShakeChat screen picker preview executable
         env:
           VITE_API_ORIGIN: https://chat.shakethat.com.tr
-        run: npm run desktop:build
+        run: npm run tauri -w @shakechat/desktop -- build --no-bundle
 
       - name: Upload screen picker preview executable
         uses: actions/upload-artifact@v4
