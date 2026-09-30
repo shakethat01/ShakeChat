@@ -99,11 +99,15 @@ pub fn run_audio_loop(
         let desired_format = WaveFormat::new(32, 32, &SampleType::Float, SAMPLE_RATE as usize, CHANNELS as usize, None);
         let block_align = desired_format.get_blockalign() as usize;
 
-        let (mut audio_client, buffer_duration_hns, label) = match target {
+        // wasapi-rs uses Direction::Render when a render endpoint is opened for classic
+        // WASAPI loopback capture. Passing Direction::Capture here does not enable the
+        // loopback stream flag, which is why full-screen "system audio" was silent while
+        // application-process loopback worked correctly.
+        let (mut audio_client, buffer_duration_hns, init_direction, label) = match target {
             AudioTarget::Process(pid) => {
                 let client = AudioClient::new_application_loopback_client(pid, true)
                     .map_err(|error| map_error("Uygulama sesi açılamadı", error))?;
-                (client, 0, "Uygulama sesi")
+                (client, 0, Direction::Capture, "Uygulama sesi")
             }
             AudioTarget::System => {
                 let enumerator = DeviceEnumerator::new().map_err(|error| map_error("Ses cihazları okunamadı", error))?;
@@ -111,13 +115,13 @@ pub fn run_audio_loop(
                     .map_err(|error| map_error("Varsayılan hoparlör bulunamadı", error))?;
                 let mut client = device.get_iaudioclient().map_err(|error| map_error("WASAPI loopback açılamadı", error))?;
                 let (_, min_period) = client.get_device_period().map_err(|error| map_error("WASAPI cihaz periyodu okunamadı", error))?;
-                (client, min_period, "Sistem sesi")
+                (client, min_period, Direction::Render, "Sistem sesi")
             }
             AudioTarget::None => unreachable!(),
         };
 
         let mode = StreamMode::EventsShared { autoconvert: true, buffer_duration_hns };
-        audio_client.initialize_client(&desired_format, &Direction::Capture, &mode)
+        audio_client.initialize_client(&desired_format, &init_direction, &mode)
             .map_err(|error| map_error(&format!("{label} loopback başlatılamadı"), error))?;
         let event = audio_client.set_get_eventhandle().map_err(|error| map_error("Ses olay kuyruğu açılamadı", error))?;
         let capture_client = audio_client.get_audiocaptureclient().map_err(|error| map_error("Ses yakalama istemcisi açılamadı", error))?;
