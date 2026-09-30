@@ -19,7 +19,10 @@
         "minWidth": 720,
         "minHeight": 480,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "focus": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false
       }
     ],
     "security": {
@@ -34,7 +37,14 @@
     "targets": [
       "nsis"
     ],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "minimumWebview2Version": "153.0.4234.32",
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      }
+    }
   },
   "plugins": {
     "updater": {
