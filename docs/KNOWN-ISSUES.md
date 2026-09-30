@@ -1,16 +1,18 @@
 # ShakeChat — güncel sorun listesi
 
-Son eşleştirme: **29 Eylül 2026**. Proje: `shakethat01/ShakeChat` (Discord benzeri sohbet uygulaması).
+Son eşleştirme: **30 Eylül 2026**. Proje: `shakethat01/ShakeChat` (Discord benzeri sohbet uygulaması).
 
 Bu dosya güncel takip kaydıdır. `KNOWN-ISSUES-1.9.10.md` ve `WORK-CHECKPOINT-1.9.10.md` tarihsel kayıtlardır. Kullanıcının sonraki olumlu test sonuçları korunmuştur; eski dosyada “test bekliyor” yazması kapanmış bir hatayı yeniden açmaz.
 
 ## Doğrulanmış devam noktası
 
-- **Resmî sürüm 1.9.12:** `app-v1.9.12`, `9b76125a45141739e7de499dfa8a32a8e7417a19`; 28 Eylül 18:04 UTC yayımlandı. Desktop Release `36461827698` ve Web/API Deploy `36461827796` başarılı.
-- **Sonraki geliştirme 1.9.13:** `feature/native-screen-capture-1.9.13`. Başlangıç `e718584c53d5ba47db2e7cf122996a52d4a25c9f`; Windows ekranı + WASAPI sistem sesi, JS/RNNoise konuşma hattı korunarak eklendi.
-- Bu başlangıcın Windows CI'sı `36544359208` başarılı; 99 web + 70 API testi. Bunun başarılı olması gerçek Windows ekran/ses kabulü yapıldığı anlamına gelmez.
-- **29 Eylül devam düzeltmeleri:** mikrofon izin toparlaması, native test izolasyonu, kendi yayın sesini geri oynatmama, tüm istemcilerde yayıncı/izleyici eşlemesi, kaynak/kalite değişirken aynı yayını koruma, geç tamamlanan paylaşım temizliği. Yeni Windows sonucu devam kaydına işlenecek.
-- Geliştirme sürümü ile resmî updater sürümü ayrı izlenir. Native ekran token endpoint'i 1.9.13 API'sini gerektirir; 1.9.12 sunucuya yalnız yeni EXE kurmak yeterli değildir.
+- **Resmî sürüm 1.9.13 yayımlandı:** `app-v1.9.13`, `1c7ae2cf1b6caf484ca5d8de64653ca65461f9e8`; 29 Eylül 2026 **22:35 Türkiye saati**. [İndirme ve sürüm](https://github.com/shakethat01/ShakeChat/releases/tag/app-v1.9.13).
+- **Windows doğrulaması tamam:** CI `36616633823`, 111 web + 71 API = **182 test**, 1 Rust testi, TypeScript, Cargo check, imzalı NSIS ve updater imzası başarılı. Test edilen `2d930547e5762cf67c7760c18eff2b1f5e6c671e` ile yayımlanan commit aynı kaynak ağacını içerir.
+- **Sunucu da güncellendi:** Web/API Deploy `36619044733` ve Desktop Release `36619044813` başarılı. Native `/screen-token` endpoint'i için gereken API dağıtımı artık tamamdır.
+- **Bu sürümde:** Windows ekranı + WASAPI sistem sesi; mevcut JS/RNNoise konuşma hattı korunur. Mikrofon izin toparlaması, native test izolasyonu, kendi yayın sesini geri oynatmama, yayıncı/izleyici eşlemesi, kesintisiz kaynak/kalite değişimi ve geç tamamlanan paylaşım temizliği eklendi. Konuşma bağlantısı kapanmış olsa da izin geri alınınca ayrı yayıncı kapatılır.
+- Önceki resmî sürüm 1.9.12 idi (`9b76125a45141739e7de499dfa8a32a8e7417a19`). Eski 1.9.13 test kurulumu aynı sürüm numarasını taşıdığı için updater yeni paket göstermeyebilir; bu durumda resmî 1.9.13 kurulumunu kullan. 1.9.12 istemciler uygulama içinden güncellenebilir.
+
+**Özet: 23 madde; 15'i önceki kullanıcı testleriyle kapalı, 8'i son kabul bekliyor.** Otomatik/derleme başarısı gerçek Windows ses/FPS ve etkilenen cihazdaki mikrofon izni testinin yerine geçmez.
 
 **Durumlar:** “Kapalı” kullanıcı testinde doğrulanmış işlevdir. “Yayımlandı / kabul bekliyor” kod ve dağıtım doğrulanmış, sonraki kullanıcı kabulü alınmamış demektir. “1.9.13 doğrulaması” yeni native yolun ek kabulüdür; önceki çalışan yolun sonucunu silmez.
 
@@ -38,8 +40,8 @@ Bu dosya güncel takip kaydıdır. `KNOWN-ISSUES-1.9.10.md` ve `WORK-CHECKPOINT-
 | SC-18 | Sunucu sahibinin silememesi veya devredip ayrılamaması | **Yayımlandı / kabul bekliyor.** Sahiplik devri, ad yazarak silme ve API yetkileri mevcut. Son API dağıtımı sonrası kullanıcı kabulü kaydı bulunmadı. Sahip doğrudan ayrılmadan devretmeli ya da sunucuyu silmeli. |
 | SC-19 | Uygulama penceresinin yeterince küçülememesi | **Yayımlandı / kabul bekliyor.** Alt sınır 720×480 yapıldı (`1b3863c`). Native kaynak seçici bu boyuta sığacak biçimde kaydırılır. |
 | SC-20 | “İzlemeyi bırak” görünürlüğü ve yayın kalite/FPS kontrollerinin fazla göze batması | **Yayımlandı / görsel kabul bekliyor.** 1.9.10 sonrası CSS düzeltmeleri (`02a7c17`, `a2831b6`) resmî sürümlerde. Yeni native seçici de aynı küçük pencereyi destekliyor. |
-| SC-21 | WebView2 ekran paylaşımı bandı; yerel Windows ekran/sistem sesi yakalaması | **1.9.13 doğrulaması.** Native yakalama, ekran token'i ve sistem sesi mevcut. 29 Eylül: kendi sesine abone olmama, test izolasyonu, sabit yayın SID'siyle kaynak/kalite değişimi, doğru ölçekleme/FPS zamanlaması, sonradan tamamlanan işlemleri iptal etme, tarayıcı izleyici uyumu ve hata temizliği eklendi. Gerçek Windows + alıcı sesi/FPS kabulü açık. |
-| SC-22 | Diğer kullanıcıların kanal/mikrofon ayarında `Permission denied` görmesi | **Düzeltildi / 1.9.13 doğrulaması.** Yerel mikrofon reddi yetkili kullanıcıyı kanaldan çıkarmaz; dinleme sürer. Türkçe açıklama, Windows ayarlarına geçiş ve uygulamanın önceki mikrofon izin kararını sıfırlayıp yeniden isteme eklendi. Sunucu/kanal rol yetkileri aşılmaz. Etkilenen Windows cihazında teyit bekler; cihazdaki izin kararının asıl nedeni uzaktan kesinleşmedi. |
+| SC-21 | WebView2 ekran paylaşımı bandı; yerel Windows ekran/sistem sesi yakalaması | **1.9.13 yayımlandı / kabul bekliyor.** Native yakalama, ekran token'i ve sistem sesi mevcut. Kendi sesine abone olmama, test izolasyonu, sabit yayın SID'siyle kaynak/kalite değişimi, doğru ölçekleme/FPS zamanlaması, sonradan tamamlanan işlemleri iptal etme, tarayıcı izleyici uyumu, yetki iptali ve hata temizliği eklendi. Gerçek Windows + alıcı sesi/FPS kabulü açık. |
+| SC-22 | Diğer kullanıcıların kanal/mikrofon ayarında `Permission denied` görmesi | **1.9.13 yayımlandı / kabul bekliyor.** Yerel mikrofon reddi yetkili kullanıcıyı kanaldan çıkarmaz; dinleme sürer. Türkçe açıklama, Windows ayarlarına geçiş ve uygulamanın önceki mikrofon izin kararını sıfırlayıp yeniden isteme eklendi. Sunucu/kanal rol yetkileri aşılmaz. Etkilenen Windows cihazında teyit bekler; cihazdaki izin kararının asıl nedeni uzaktan kesinleşmedi. |
 | SC-23 | Kısa Socket.IO yeniden bağlantısında çevrimiçi üyelerin gri yanıp sönmesi | **1.9.12 düzeltmesi yayımlandı / kabul bekliyor.** `2c1d732` ve regresyon testleri. Eski ses oturumu SC-08'in kapanışını değiştirmez. |
 
 ## İlk 15 maddeyle eşleştirme
