@@ -1,0 +1,378 @@
+/* ShakeChat native screen picker — Discord-inspired information hierarchy, original ShakeChat styling. */
+dialog.native-screen-picker-backdrop {
+  position: fixed !important;
+  inset: 0 !important;
+  margin: auto !important;
+  width: min(1040px, calc(100vw - 24px)) !important;
+  height: min(780px, calc(100vh - 24px));
+  max-width: none !important;
+  max-height: none !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  border: 1px solid rgba(123, 132, 148, .28) !important;
+  border-radius: 18px !important;
+  background: #11141a !important;
+  color: #f5f6f8;
+  box-shadow: 0 34px 110px rgba(0, 0, 0, .72), 0 0 0 1px rgba(255, 143, 44, .04) inset;
+}
+dialog.native-screen-picker-backdrop:not([open]) { display: none !important; }
+dialog.native-screen-picker-backdrop::backdrop {
+  background: rgba(3, 5, 8, .78) !important;
+  backdrop-filter: blur(8px) saturate(.7);
+}
+
+.native-screen-picker {
+  width: 100% !important;
+  height: 100%;
+  max-height: none !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  background:
+    radial-gradient(circle at 18% -20%, rgba(255, 132, 36, .09), transparent 38%),
+    linear-gradient(180deg, #12161d 0%, #0e1116 100%);
+}
+.native-screen-picker .modal-head {
+  padding: 24px 28px 15px;
+  align-items: flex-start;
+}
+.native-screen-picker .modal-head h2 {
+  margin: 0 0 5px;
+  font-size: clamp(21px, 2.4vw, 28px);
+  line-height: 1.08;
+  letter-spacing: -.025em;
+}
+.native-screen-picker .modal-head p {
+  margin: 0;
+  color: #959ca8;
+  font-size: 13px;
+}
+.native-screen-picker .modal-head .icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  line-height: 1;
+  transition: background .14s ease, color .14s ease;
+}
+.native-screen-picker .modal-head .icon-btn:hover { background: #232832; color: #fff; }
+
+.native-screen-tabs {
+  margin: 0 28px 16px;
+  padding: 5px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  border: 1px solid #272d37;
+  border-radius: 13px;
+  background: rgba(4, 6, 9, .72);
+}
+.native-screen-tab {
+  min-height: 45px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #9ba2ae;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  font-weight: 800;
+  font-size: 13px;
+  transition: color .14s ease, background .14s ease, box-shadow .14s ease;
+}
+.native-screen-tab:hover { color: #e8eaee; background: #171b22; }
+.native-screen-tab.active {
+  color: #fff6eb;
+  background: linear-gradient(180deg, rgba(255, 139, 40, .19), rgba(255, 119, 22, .09));
+  box-shadow: 0 0 0 1px #f28a32 inset, 0 0 18px rgba(242, 126, 35, .12);
+}
+.native-screen-tab .native-screen-tab-icon { font-size: 16px; opacity: .94; }
+
+.native-screen-picker-body {
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 20px 0 28px;
+}
+.native-screen-grid {
+  height: 100%;
+  overflow-y: auto;
+  padding: 2px 8px 20px 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 14px;
+  scrollbar-width: thin;
+  scrollbar-color: #555d69 transparent;
+}
+.native-screen-grid::-webkit-scrollbar { width: 8px; }
+.native-screen-grid::-webkit-scrollbar-thumb { background: #555d69; border-radius: 99px; }
+
+.native-screen-card {
+  position: relative;
+  min-width: 0;
+  border: 1px solid #2c323c;
+  border-radius: 14px;
+  padding: 0;
+  overflow: hidden;
+  background: linear-gradient(180deg, #141920, #10141a);
+  color: #eef0f3;
+  text-align: left;
+  transition: transform .12s ease, border-color .12s ease, box-shadow .12s ease, background .12s ease;
+}
+.native-screen-card:hover {
+  transform: translateY(-1px);
+  border-color: #4b535f;
+  background: linear-gradient(180deg, #191e26, #12171d);
+}
+.native-screen-card.selected {
+  border-color: #ff922f;
+  box-shadow: 0 0 0 1px rgba(255, 146, 47, .85), 0 0 24px rgba(255, 122, 24, .18);
+}
+.native-screen-card-preview {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: 118px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 26% 18%, rgba(255, 139, 47, .12), transparent 38%),
+    linear-gradient(145deg, #1c222b, #090c10 66%);
+  border-bottom: 1px solid #252a32;
+}
+.native-screen-card-preview canvas {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  image-rendering: auto;
+}
+.native-screen-preview-placeholder {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  color: #6f7783;
+  font-size: 12px;
+  font-weight: 750;
+}
+.native-screen-preview-placeholder strong {
+  width: 46px;
+  height: 38px;
+  border: 2px solid #555d69;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  color: #89919d;
+}
+.native-screen-card.selected .native-screen-preview-placeholder strong { border-color: #b86e31; color: #ffab62; }
+.native-screen-card-copy {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 11px 13px 12px;
+}
+.native-screen-card-badge {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  background: #202630;
+  color: #c9ced6;
+  font-size: 15px;
+  font-weight: 900;
+}
+.native-screen-card.selected .native-screen-card-badge { background: #3a2415; color: #ff9a43; }
+.native-screen-card-copy span { min-width: 0; }
+.native-screen-card-copy b {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.25;
+}
+.native-screen-card-copy small {
+  display: block;
+  margin-top: 4px;
+  color: #858d99;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.native-screen-empty {
+  height: 100%;
+  min-height: 220px;
+  border: 1px dashed #303641;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  padding: 30px;
+  color: #8e96a2;
+  text-align: center;
+  background: rgba(18, 22, 28, .5);
+}
+.native-screen-empty strong { display: block; color: #dfe2e7; margin-bottom: 7px; font-size: 14px; }
+
+.native-screen-footer {
+  position: relative;
+  min-height: 78px;
+  padding: 12px 22px 12px 28px;
+  border-top: 1px solid #252b34;
+  background: rgba(12, 15, 20, .96);
+  box-shadow: 0 -12px 35px rgba(0, 0, 0, .2);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.native-screen-footer-info {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+.native-screen-footer-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  background: #181d24;
+  border: 1px solid #2c333e;
+  color: #ff9840;
+}
+.native-screen-footer-copy { min-width: 0; }
+.native-screen-footer-copy b { display: block; font-size: 13px; }
+.native-screen-footer-meta {
+  margin-top: 3px;
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+  color: #858c97;
+  font-size: 11px;
+}
+.native-screen-footer-meta .audio { color: #c59772; }
+.native-screen-footer-actions { display: flex; align-items: center; gap: 8px; }
+.native-screen-quality-pills {
+  display: flex;
+  gap: 3px;
+  padding: 4px;
+  border-radius: 11px;
+  background: #07090d;
+  border: 1px solid #242a33;
+}
+.native-screen-quality-pills button,
+.native-screen-settings-button {
+  min-width: 48px;
+  height: 38px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #9ba2ad;
+  font-weight: 900;
+  font-size: 12px;
+}
+.native-screen-quality-pills button.active {
+  color: #ff9a42;
+  background: #2d1b0f;
+  box-shadow: 0 0 0 1px #6f3d1b inset;
+}
+.native-screen-settings-button {
+  min-width: 42px;
+  border: 1px solid #303641;
+  background: #1a1e25;
+  font-size: 17px;
+}
+.native-screen-settings-button:hover { background: #242a32; color: #fff; }
+.native-screen-publish {
+  height: 44px;
+  min-width: 132px;
+  border: 0;
+  border-radius: 11px;
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #17100a;
+  background: linear-gradient(180deg, #ffa24f, #ff7d1f);
+  box-shadow: 0 7px 24px rgba(255, 120, 22, .25), 0 1px 0 rgba(255,255,255,.25) inset;
+  font-weight: 950;
+  transition: transform .12s ease, filter .12s ease, opacity .12s ease;
+}
+.native-screen-publish:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.06); }
+.native-screen-publish:disabled { opacity: .36; box-shadow: none; }
+
+.native-screen-quality-popover {
+  position: absolute;
+  right: 164px;
+  bottom: 68px;
+  width: 230px;
+  padding: 12px;
+  border: 1px solid #343b46;
+  border-radius: 12px;
+  background: #15191f;
+  box-shadow: 0 18px 50px rgba(0,0,0,.55);
+  z-index: 5;
+}
+.native-screen-quality-popover[hidden] { display: none; }
+.native-screen-quality-popover label {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 10px;
+  color: #979fab;
+  font-size: 11px;
+  font-weight: 850;
+}
+.native-screen-quality-popover label:last-child { margin-bottom: 0; }
+.native-screen-quality-popover select {
+  height: 36px;
+  border: 1px solid #373e49;
+  border-radius: 8px;
+  background: #0c0f13;
+  color: #f2f3f5;
+  padding: 0 9px;
+  outline: none;
+}
+
+@media (max-width: 760px) {
+  dialog.native-screen-picker-backdrop { width: calc(100vw - 14px) !important; height: calc(100vh - 14px); border-radius: 14px !important; }
+  .native-screen-picker .modal-head { padding: 16px 16px 10px; }
+  .native-screen-picker .modal-head p { font-size: 11px; }
+  .native-screen-tabs { margin: 0 16px 10px; }
+  .native-screen-tab { min-height: 38px; font-size: 11px; }
+  .native-screen-picker-body { padding: 0 10px 0 16px; }
+  .native-screen-grid { gap: 9px; padding-bottom: 10px; }
+  .native-screen-card-preview { min-height: 86px; }
+  .native-screen-card-copy { grid-template-columns: 25px minmax(0, 1fr); gap: 7px; padding: 8px 9px; }
+  .native-screen-card-badge { width: 25px; height: 25px; border-radius: 7px; font-size: 12px; }
+  .native-screen-card-copy b { font-size: 11px; }
+  .native-screen-card-copy small { font-size: 9px; margin-top: 2px; }
+  .native-screen-footer { min-height: 62px; padding: 8px 12px 8px 16px; gap: 8px; }
+  .native-screen-footer-icon { width: 32px; height: 32px; }
+  .native-screen-footer-info { grid-template-columns: 32px minmax(0, 1fr); gap: 7px; }
+  .native-screen-footer-copy b { font-size: 11px; }
+  .native-screen-footer-meta { font-size: 9px; gap: 5px; }
+  .native-screen-quality-pills button { min-width: 38px; height: 34px; font-size: 10px; }
+  .native-screen-settings-button { min-width: 36px; width: 36px; height: 36px; }
+  .native-screen-publish { min-width: 98px; height: 38px; padding: 0 12px; font-size: 11px; }
+  .native-screen-quality-popover { right: 120px; bottom: 56px; width: 200px; }
+}
+
+@media (max-width: 560px) {
+  .native-screen-grid { grid-template-columns: 1fr; }
+  .native-screen-footer-copy { display: none; }
+  .native-screen-footer-info { flex: 0 0 32px; display: block; }
+  .native-screen-quality-pills button { min-width: 34px; }
+}
