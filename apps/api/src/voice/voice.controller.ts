@@ -17,6 +17,11 @@ export class VoiceController {
     return this.voice.createJoinToken(req.user.sub, channelId);
   }
 
+  @Post('channels/:channelId/audio-token')
+  audioToken(@Req() req: any, @Param('channelId') channelId: string) {
+    return this.voice.createAudioToken(req.user.sub, channelId);
+  }
+
   @Post('channels/:channelId/screen-token')
   screenToken(@Req() req: any, @Param('channelId') channelId: string) {
     return this.voice.createScreenToken(req.user.sub, channelId);
